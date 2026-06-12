@@ -1,0 +1,17 @@
+# @package _global_
+# Evaluate (no training) SAM3 on the AWS_SAM test split.
+#
+# Override checkpoint via Hydra:
+#   python sam3/train/train.py -c configs/aws_sam/aws_sam_eval.yaml \
+#       --use-cluster 0 --num-gpus 1 \
+#       trainer.checkpoint.resume_from=/path/to/run/checkpoints/checkpoint.pt
+
+defaults:
+  - aws_sam_finetune
+  - _self_
+
+trainer:
+  mode: val
+  max_epochs: 1
+  skip_first_val: False
+  val_epoch_freq: 1
