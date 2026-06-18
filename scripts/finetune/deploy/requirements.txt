@@ -1,0 +1,10 @@
+# Dependencies installed by SageMaker's PyTorch inference container before
+# inference.py is imported. Keep this list minimal — torch / torchvision /
+# numpy are already present in the base image.
+sam3 @ git+https://github.com/facebookresearch/sam3.git
+pycocotools
+huggingface_hub
+iopath>=0.1.10
+ftfy==6.1.1
+regex
+timm>=1.0.17

@@ -194,6 +194,162 @@ The eval config inherits from the fine-tune one and just flips
 
 ---
 
+---
+
+## 5. Interactive evaluation: mIoU / Boundary IoU / NoC@95
+
+`scripts/finetune/eval/evaluate_interactive.py` runs each test instance
+through the same model under three settings — 0 corrective clicks (text
+prompt only), 1 click (positive click at the GT centroid), and 3 clicks
+(positive seed + 2 corrections placed on the worst-error region) — then
+reports:
+
+| Metric | Description |
+|---|---|
+| **mIoU @ k clicks** | mean Intersection-over-Union after k clicks (k ∈ {0, 1, 3}) |
+| **Boundary IoU @ k clicks** | IoU restricted to a band along the mask boundary (Cheng et al., CVPR 2021), dilation = 2 % of the image diagonal |
+| **NoC@95** | mean number of clicks needed to reach IoU ≥ 0.95, capped at 20 |
+
+### Run pretrained vs. fine-tuned
+
+```bash
+# Pretrained (facebook/sam3, downloaded from HF)
+python scripts/finetune/eval/evaluate_interactive.py \
+    --coco data/AWS_SAM_split/test.json \
+    --image-root data/AWS_SAM \
+    --output runs/eval/pretrained.json
+
+# Fine-tuned weights from the run above
+python scripts/finetune/eval/evaluate_interactive.py \
+    --coco data/AWS_SAM_split/test.json \
+    --image-root data/AWS_SAM \
+    --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint.pt \
+    --output runs/eval/finetuned.json
+
+# Side-by-side markdown table
+python scripts/finetune/eval/compare_results.py \
+    --pretrained runs/eval/pretrained.json \
+    --finetuned  runs/eval/finetuned.json \
+    --out-md     runs/eval/compare.md
+```
+
+Useful flags:
+
+- `--max-instances N` — total cap (use 100–500 for a quick smoke test).
+- `--max-per-image N` — keeps eval balanced across images instead of
+  letting a few very crowded scenes dominate.
+- `--min-area 200` — drops tiny GTs (default 200 px²) where boundary IoU
+  is meaningless.
+- `--skip-zero-click` — skip the text-prompt path if you only care about
+  click metrics (saves ~half the wall-time).
+- `--max-clicks 20 --iou-target 0.95` — defaults match the standard
+  interactive-segmentation protocol.
+
+The output JSON contains both the per-instance breakdown and an
+aggregated summary; `compare_results.py` only reads the summary.
+
+---
+
+## 6. SageMaker real-time endpoint
+
+`scripts/finetune/deploy/` contains a SageMaker PyTorch deployment for
+both the pretrained and the fine-tuned model. The handler
+(`inference.py`) accepts JSON requests in two modes — text prompt or
+SAM-1-style click prompt — and returns COCO-RLE encoded masks.
+
+### Prerequisites
+
+```bash
+pip install sagemaker boto3
+aws configure                # or assume an IAM role with sagemaker:*
+```
+
+### Deploy
+
+```bash
+# Fine-tuned model
+python scripts/finetune/deploy/deploy.py \
+    --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint.pt \
+    --role arn:aws:iam::<acct>:role/SageMakerRole \
+    --bucket <my-sagemaker-bucket> \
+    --prefix sam3/aws_sam_v1 \
+    --instance-type ml.g5.xlarge \
+    --endpoint-name sam3-aws-sam
+
+# Pretrained (downloads facebook/sam3 inside the container on cold start)
+python scripts/finetune/deploy/deploy.py --pretrained --role <ARN> --bucket <BUCKET>
+```
+
+What it does:
+
+1. Builds `runs/deploy/model.tar.gz` containing
+   `checkpoint.pt`, the BPE vocab, and `code/{inference.py,requirements.txt}`.
+2. Uploads it to S3.
+3. Creates a `PyTorchModel` and `.deploy(...)` an endpoint.
+
+### Invoke
+
+```bash
+# Text prompt
+python scripts/finetune/deploy/invoke_example.py \
+    --endpoint sam3-aws-sam \
+    --image data/AWS_SAM/companypremises2025101600217.png \
+    --text grass
+
+# Click prompt
+python scripts/finetune/deploy/invoke_example.py \
+    --endpoint sam3-aws-sam --image <path> --click 520 375
+```
+
+Request schemas, including the optional `box` and `multimask_output`
+fields, are documented at the top of `inference.py`. Masks come back as
+COCO-RLE strings that `pycocotools.mask.decode(rle)` turns into binary
+arrays.
+
+Recommended instance: `ml.g5.xlarge` (1 × A10G, 24 GB) for the standard
+SAM3 model at 1008 resolution. Use `ml.g5.2xlarge` if you also need
+client-side preprocessing on the same host.
+
+---
+
+## 7. Throughput / latency benchmark
+
+`scripts/finetune/benchmark/benchmark_throughput.py` separately measures
+the three components of an inference call:
+
+- **set_image** — image preprocessing + ViT embedding (the dominant cost).
+- **text** — `set_image` + `set_text_prompt`, both in full-pipeline form
+  and "amortized" (prompt only, with the embedding excluded — what
+  matters when the same image is queried repeatedly).
+- **click_n** — `set_image` + `predict_inst` with N positive clicks
+  (sweeps N via `--click-points`).
+
+Stats reported per setting: median + p50/p90/p95/p99 latency, mean,
+throughput per second.
+
+```bash
+# Pretrained
+python scripts/finetune/benchmark/benchmark_throughput.py \
+    --image-dir data/AWS_SAM \
+    --num-iters 50 --warmup 5 \
+    --click-points 1 3 5 \
+    --output runs/bench/pretrained.json
+
+# Fine-tuned
+python scripts/finetune/benchmark/benchmark_throughput.py \
+    --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint.pt \
+    --output runs/bench/finetuned.json
+```
+
+Skip flags: `--skip-set-image`, `--skip-text`, `--skip-click` if you
+only want a subset.
+
+The benchmark inserts `torch.cuda.synchronize()` around every timed
+region — numbers reflect device wall-time, not the host-side launch
+queue.
+
+---
+
 ## File layout produced by this workflow
 
 ```
@@ -210,6 +366,12 @@ runs/
     tensorboard/
     logs/
     dumps/aws_sam/<predictions>.json
+  eval/
+    pretrained.json finetuned.json compare.md
+  bench/
+    pretrained.json finetuned.json
+  deploy/
+    model.tar.gz                    # bundle uploaded to S3
 ```
 
 ## Troubleshooting
@@ -228,3 +390,14 @@ runs/
 - **Polygons look wrong in the visualizer** — re-run `prepare_aws_sam.py`
   and check `categories.json` instance counts; LabelMe sometimes exports
   empty `points` arrays (we skip those automatically).
+- **Eval is too slow** — start with `--max-instances 200` to verify the
+  pipeline, then scale up. The 0-click path is the most expensive
+  (text prompts run a full DETR forward); pass `--skip-zero-click` if
+  you only need click metrics.
+- **SageMaker container OOMs on first request** — `facebook/sam3` is
+  ~2 GB; on cold start the HF download competes with model loading.
+  Either bundle the checkpoint via `--checkpoint` or pre-warm by
+  invoking the endpoint once and waiting ~60 s before real traffic.
+- **Benchmark numbers swing wildly** — raise `--warmup` (default 5,
+  bump to 20 for a fresh CUDA context) and pin the GPU via
+  `nvidia-smi -lgc <freq>` if you need clock-stable measurements.
