@@ -23,6 +23,9 @@ paths:
   aws_sam_split_dir: ${oc.env:PWD}/data/AWS_SAM_split
   experiment_log_dir: ${oc.env:PWD}/runs/aws_sam_finetune
   bpe_path: ${oc.env:PWD}/sam3/assets/bpe_simple_vocab_16e6.txt.gz
+  # Local pretrained SAM3 weights — overrides the HuggingFace download.
+  # Set to null and flip trainer.model.load_from_HF=True to pull from HF.
+  sam3_pretrained_ckpt: /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt
 
 aws_sam_train:
   num_images: null  # null = use all available images
@@ -286,8 +289,11 @@ trainer:
     device: cpus
     eval_mode: false
     enable_segmentation: ${scratch.enable_segmentation}
-    # load_from_HF=True (the default) downloads facebook/sam3 weights if
-    # checkpoint_path is None. Run `hf auth login` first.
+    # Load weights from a local file (default). Set load_from_HF=True and
+    # checkpoint_path=null to pull facebook/sam3 from HuggingFace instead
+    # (requires `hf auth login`).
+    checkpoint_path: ${paths.sam3_pretrained_ckpt}
+    load_from_HF: False
 
   meters:
     val:

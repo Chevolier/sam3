@@ -160,6 +160,8 @@ def text_prompt_zero_click(
     masks = state.get("masks")
     if masks is None or len(masks) == 0:
         return np.zeros_like(gt_mask, dtype=np.uint8)
+    if isinstance(masks, torch.Tensor):
+        masks = masks.detach().cpu().numpy()
     masks = np.asarray(masks).astype(np.uint8)
     if masks.ndim == 2:
         masks = masks[None]

@@ -168,6 +168,12 @@ def _predict_text(processor, image: Image.Image, payload: dict, hw: tuple[int, i
             "boxes": [],
             "image_size": list(hw),
         }
+    if isinstance(masks, torch.Tensor):
+        masks = masks.detach().cpu().numpy()
+    if isinstance(scores, torch.Tensor):
+        scores = scores.detach().cpu().numpy()
+    if isinstance(boxes, torch.Tensor):
+        boxes = boxes.detach().cpu().numpy()
     masks = np.asarray(masks).astype(np.uint8)
     if masks.ndim == 2:
         masks = masks[None]

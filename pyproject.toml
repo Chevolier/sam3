@@ -25,6 +25,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    # PyTorch capped below 2.12 — the 2.12 default wheels are cu130 and
+    # refuse to initialize on CUDA-12.8 drivers (e.g. the A10G hosts here).
+    # Install from https://download.pytorch.org/whl/cu128 to match the driver.
+    "torch>=2.7,<2.12",
+    "torchvision",
     "timm>=1.0.17",
     "numpy>=1.26,<2",
     "tqdm",
@@ -33,6 +38,8 @@ dependencies = [
     "iopath>=0.1.10",
     "typing_extensions",
     "huggingface_hub",
+    "einops",
+    "psutil",
 ]
 
 [project.optional-dependencies]

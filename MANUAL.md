@@ -21,10 +21,28 @@ All commands assume the repo root is the working directory.
 ## 0. Install
 
 ```bash
+pip install --index-url https://download.pytorch.org/whl/cu128 \
+      torch torchvision
 pip install -e ".[dev,train]"
 pip install -e ".[notebooks]"   # PIL is in numpy/jupyter, but pin versions if missing
-hf auth login                    # required: training pulls facebook/sam3 from HF
+
+pip install einops psutil
 ```
+
+### Pretrained weights
+
+By default this workflow loads SAM3 weights from a local checkpoint at
+`/home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt` — no HuggingFace
+download needed. Override per-run:
+
+- **Training**: `paths.sam3_pretrained_ckpt=/abs/path/to/sam3.pt`
+- **Eval / benchmark**: `--checkpoint /abs/path/to/sam3.pt`
+- **SageMaker deploy**: `--checkpoint /abs/path/to/sam3.pt`
+
+If you want to pull `facebook/sam3` from HuggingFace instead, set the
+training config `paths.sam3_pretrained_ckpt=null` and
+`trainer.model.load_from_HF=True`, and run `hf auth login` first. For the
+eval/benchmark scripts, omit `--checkpoint` entirely.
 
 Hardware: a single GPU with ≥ 24 GB VRAM is enough at `train_batch_size=1`,
 resolution 1008. Multi-GPU works the same way — just bump `--num-gpus`.
@@ -39,7 +57,7 @@ python scripts/finetune/prepare_aws_sam.py \
     --out-dir  data/AWS_SAM_split \
     --train-frac 0.9 \
     --seed 42 \
-    --min-count 20
+    --min-count 1
 ```
 
 What it does:
@@ -213,10 +231,11 @@ reports:
 ### Run pretrained vs. fine-tuned
 
 ```bash
-# Pretrained (facebook/sam3, downloaded from HF)
+# Pretrained (local SAM3 weights)
 python scripts/finetune/eval/evaluate_interactive.py \
     --coco data/AWS_SAM_split/test.json \
     --image-root data/AWS_SAM \
+    --checkpoint /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
     --output runs/eval/pretrained.json
 
 # Fine-tuned weights from the run above
@@ -232,6 +251,10 @@ python scripts/finetune/eval/compare_results.py \
     --finetuned  runs/eval/finetuned.json \
     --out-md     runs/eval/compare.md
 ```
+
+Omit `--checkpoint` to fall back to a HuggingFace download of
+`facebook/sam3`. The two checkpoints share the same state-dict layout
+so swapping is just a path change.
 
 Useful flags:
 
@@ -328,9 +351,10 @@ Stats reported per setting: median + p50/p90/p95/p99 latency, mean,
 throughput per second.
 
 ```bash
-# Pretrained
+# Pretrained (local SAM3 weights)
 python scripts/finetune/benchmark/benchmark_throughput.py \
     --image-dir data/AWS_SAM \
+    --checkpoint /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
     --num-iters 50 --warmup 5 \
     --click-points 1 3 5 \
     --output runs/bench/pretrained.json
