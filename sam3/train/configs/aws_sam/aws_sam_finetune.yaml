@@ -121,7 +121,7 @@ aws_sam_train:
           loss_dice: 10.0
         compute_aux: false
     loss_fn_semantic_seg:
-      _target_: sam3.losses.loss_fns.SemanticSegCriterion
+      _target_: sam3.train.loss.loss_fns.SemanticSegCriterion
       presence_head: True
       presence_loss: False
       focal: True
@@ -176,7 +176,7 @@ scratch:
   val_norm_mean: [0.5, 0.5, 0.5]
   val_norm_std: [0.5, 0.5, 0.5]
 
-  num_train_workers: 4
+  num_train_workers: 0
   num_val_workers: 0
   hybrid_repeats: 1
   gather_pred_via_filesys: false
@@ -226,7 +226,9 @@ trainer:
   gradient_accumulation_steps: ${scratch.gradient_accumulation_steps}
 
   distributed:
-    backend: nccl
+    # NCCL segfaults during DDP shape-verify on cu128 wheels + single-GPU.
+    # gloo is a no-op at world_size=1 and is fine for >1 GPUs over IB/eth too.
+    backend: gloo
     find_unused_parameters: True
     gradient_as_bucket_view: True
 

@@ -68,7 +68,13 @@ class Mlp(nn.Module):
         self.drop2 = nn.Dropout(drop_probs[1])
 
     def forward(self, x):
-        x = addmm_act(type(self.act), self.fc1, x)
+        if torch.is_grad_enabled():
+            # addmm_act is an inference-only fused kernel — it detaches
+            # weights and refuses to run under autograd. Fall back to the
+            # vanilla path when training.
+            x = self.act(self.fc1(x))
+        else:
+            x = addmm_act(type(self.act), self.fc1, x)
         x = self.drop1(x)
         x = self.norm(x)
         x = self.fc2(x)
