@@ -167,6 +167,11 @@ scratch:
     stable: False
   scale_by_find_batch_size: True
 
+  # Image resolution is coupled to the ViT init: build_sam3_image_model
+  # constructs ViT with img_size=1008 and pre-bakes RoPE freqs_cis +
+  # absolute pos embedding for a 72×72 token grid. Changing this alone
+  # triggers AssertionError in vitdet.reshape_for_broadcast — the
+  # builder would need to parameterize img_size before you can drop it.
   resolution: 1008
   consistent_transform: False
   max_ann_per_img: 200

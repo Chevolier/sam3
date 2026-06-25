@@ -654,6 +654,43 @@ def build_sam3_image_model(
     return model
 
 
+def build_sam3_image_model_with_freeze(
+    freeze_patterns=None,
+    **kwargs,
+):
+    """Same as build_sam3_image_model but freezes parameters whose name
+    matches any prefix in `freeze_patterns`. Use this to skip backprop
+    through expensive subtrees (e.g. the ViT-L vision backbone) when
+    fine-tuning on a small dataset / limited GPU memory.
+
+    Example:
+        freeze_patterns: ["backbone.vision_backbone."]
+
+    Parameters with requires_grad=False are skipped by the optimizer and
+    their activations don't need to be retained for backward, which cuts
+    peak memory roughly in half for SAM3's 840M-param model.
+    """
+    import fnmatch
+
+    model = build_sam3_image_model(**kwargs)
+    if not freeze_patterns:
+        return model
+
+    n_frozen = 0
+    n_total = 0
+    for name, param in model.named_parameters():
+        n_total += 1
+        if any(fnmatch.fnmatch(name, p) or name.startswith(p) for p in freeze_patterns):
+            param.requires_grad = False
+            n_frozen += 1
+    import logging
+    logging.info(
+        f"[freeze] froze {n_frozen}/{n_total} parameter tensors matching "
+        f"{freeze_patterns}"
+    )
+    return model
+
+
 def download_ckpt_from_hf(version="sam3"):
     """Download model checkpoint from HuggingFace Hub.
 

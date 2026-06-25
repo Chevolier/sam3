@@ -130,7 +130,7 @@ python sam3/train/train.py \
 python sam3/train/train.py \
     -c configs/aws_sam/aws_sam_finetune.yaml \
     --use-cluster 0 \
-    --num-gpus 4
+    --num-gpus 8
 ```
 
 ### Override paths from the command line
