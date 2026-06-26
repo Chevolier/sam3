@@ -168,13 +168,18 @@ def _predict_text(processor, image: Image.Image, payload: dict, hw: tuple[int, i
             "boxes": [],
             "image_size": list(hw),
         }
+    # Cast to fp32 before crossing to numpy — autocast may have returned bf16,
+    # which numpy doesn't support.
     if isinstance(masks, torch.Tensor):
-        masks = masks.detach().cpu().numpy()
+        masks = masks.detach().to(torch.float32).cpu().numpy()
     if isinstance(scores, torch.Tensor):
-        scores = scores.detach().cpu().numpy()
+        scores = scores.detach().to(torch.float32).cpu().numpy()
     if isinstance(boxes, torch.Tensor):
-        boxes = boxes.detach().cpu().numpy()
+        boxes = boxes.detach().to(torch.float32).cpu().numpy()
     masks = np.asarray(masks).astype(np.uint8)
+    # Sam3Processor returns text-mode masks as (N, 1, H, W); squeeze channel dim.
+    if masks.ndim == 4 and masks.shape[1] == 1:
+        masks = masks[:, 0]
     if masks.ndim == 2:
         masks = masks[None]
     return {

@@ -537,22 +537,37 @@ def _create_sam3_transformer(
 
 
 def _load_checkpoint(model, checkpoint_path):
-    """Load model checkpoint from file."""
+    """Load model checkpoint from file.
+
+    Handles three formats:
+      1. OSS pretrained (facebook/sam3): keys prefixed with "detector." /
+         "tracker.", remapped to the OSS module layout.
+      2. Trainer checkpoint: wrapper dict {"model": <state_dict>, ...}
+         saved by sam3.train.trainer. The inner state dict already uses
+         the OSS module layout, so it's loaded as-is.
+      3. Plain state dict in OSS layout (already unprefixed).
+    """
     with g_pathmgr.open(checkpoint_path, "rb") as f:
         ckpt = torch.load(f, map_location="cpu", weights_only=True)
     if "model" in ckpt and isinstance(ckpt["model"], dict):
         ckpt = ckpt["model"]
-    sam3_image_ckpt = {
-        k.replace("detector.", ""): v for k, v in ckpt.items() if "detector" in k
-    }
-    if model.inst_interactive_predictor is not None:
-        sam3_image_ckpt.update(
-            {
-                k.replace("tracker.", "inst_interactive_predictor.model."): v
-                for k, v in ckpt.items()
-                if "tracker" in k
-            }
-        )
+    has_detector_prefix = any(k.startswith("detector.") for k in ckpt)
+    if has_detector_prefix:
+        # Internal/OSS-released format: strip "detector." / remap "tracker.".
+        sam3_image_ckpt = {
+            k.replace("detector.", ""): v for k, v in ckpt.items() if "detector" in k
+        }
+        if model.inst_interactive_predictor is not None:
+            sam3_image_ckpt.update(
+                {
+                    k.replace("tracker.", "inst_interactive_predictor.model."): v
+                    for k, v in ckpt.items()
+                    if "tracker" in k
+                }
+            )
+    else:
+        # Trainer checkpoint or other already-unprefixed dict: load directly.
+        sam3_image_ckpt = dict(ckpt)
     missing_keys, _ = model.load_state_dict(sam3_image_ckpt, strict=False)
     if len(missing_keys) > 0:
         print(

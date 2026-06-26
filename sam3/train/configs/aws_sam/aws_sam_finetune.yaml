@@ -197,8 +197,8 @@ scratch:
   scheduler_warmup: 20
   scheduler_cooldown: 20
 
-  val_batch_size: 1
-  train_batch_size: 1
+  val_batch_size: 8
+  train_batch_size: 8
   gradient_accumulation_steps: 1
 
   collate_fn:
@@ -258,6 +258,16 @@ trainer:
         use_caching: False
         img_folder: ${paths.aws_sam_image_root}
         ann_file: ${paths.aws_sam_split_dir}/train.json
+        coco_json_loader:
+          _target_: sam3.train.data.coco_json_loaders.COCO_FROM_JSON
+          include_negatives: true
+          # Chunk categories so each batch's semantic-seg head only
+          # materializes K per-pixel logit maps instead of all 66 at
+          # once. Without this, the pixel decoder's upsample backward
+          # tries to push a [batch×num_cats, 256, H, W] tensor through
+          # CUDA kernels that overflow int32 indexing.
+          category_chunk_size: 4
+          _partial_: true
       shuffle: True
       batch_size: ${scratch.train_batch_size}
       num_workers: ${scratch.num_train_workers}
@@ -379,7 +389,7 @@ trainer:
 
   checkpoint:
     save_dir: ${launcher.experiment_log_dir}/checkpoints
-    save_freq: 0  # 0 = only the last checkpoint is saved.
+    save_freq: 1  # 0 = only the last checkpoint is saved.
 
   logging:
     tensorboard_writer:

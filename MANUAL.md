@@ -118,10 +118,10 @@ Hydra resolves `-c` relative to `sam3/train/configs/`.
 ### Single-GPU local run
 
 ```bash
-python sam3/train/train.py \
+nohup python sam3/train/train.py \
     -c configs/aws_sam/aws_sam_finetune.yaml \
     --use-cluster 0 \
-    --num-gpus 1
+    --num-gpus 8 > logs/train2.out 2>&1 &
 ```
 
 ### Multi-GPU local run
@@ -197,13 +197,59 @@ Keeps memory ~30 % lower.
 
 ---
 
+## 3.5 Merge the checkpoint (do this once after training)
+
+The trainer only saves parameters of modules it actually built. Because
+training runs with `enable_inst_interactivity=False` (default), the
+SAM-1 click predictor, the SAM-2 neck convs, and the tracker get
+**omitted** from `checkpoint.pt`. Inference code that builds those
+modules will fill them with random init → catastrophic eval regression
+(observed mIoU ≈ 0.02 vs. 0.57 pretrained).
+
+`scripts/finetune/merge_checkpoint.py` produces a self-contained file:
+
+```bash
+python scripts/finetune/merge_checkpoint.py \
+    --finetuned  runs/aws_sam_finetune/checkpoints/checkpoint.pt \
+    --pretrained /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
+    --output     runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt
+```
+
+Expected output:
+
+```
+[merge]   pretrained keys: ~1465
+[merge]   fine-tuned keys: 1134
+[merge] result: total=~1465, updated_from_ft=1134, kept_from_pretrained=~331, only_in_ft=0
+[merge] wrote runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt
+```
+
+After this step, **`checkpoint_merged.pt` is the canonical artifact**
+to pass to eval, compare-app, benchmark, and SageMaker deploy. The
+unmerged `checkpoint.pt` is incomplete on its own.
+
+Re-run the merge after every fresh training run (or wrap both into a
+shell script):
+
+```bash
+# scripts/finetune/train_and_merge.sh
+python sam3/train/train.py -c configs/aws_sam/aws_sam_finetune.yaml \
+    --use-cluster 0 --num-gpus 8
+python scripts/finetune/merge_checkpoint.py \
+    --finetuned  runs/aws_sam_finetune/checkpoints/checkpoint.pt \
+    --pretrained /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
+    --output     runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt
+```
+
+---
+
 ## 4. Eval-only against the test split
 
 ```bash
 python sam3/train/train.py \
     -c configs/aws_sam/aws_sam_eval.yaml \
     --use-cluster 0 --num-gpus 1 \
-    trainer.checkpoint.resume_from=runs/aws_sam_finetune/checkpoints/checkpoint.pt
+    trainer.checkpoint.resume_from=runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt
 ```
 
 The eval config inherits from the fine-tune one and just flips
@@ -211,6 +257,41 @@ The eval config inherits from the fine-tune one and just flips
 `${experiment_log_dir}/dumps/aws_sam/`.
 
 ---
+
+---
+
+## 4.1 Interactive web UI: side-by-side compare
+
+For a qualitative side-by-side comparison of the pretrained and fine-tuned
+models on arbitrary images / prompts, run:
+
+```bash
+pip install fastapi uvicorn pydantic   # if not already installed
+
+python scripts/finetune/compare_app/server.py \
+    --pretrained-ckpt /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
+    --finetuned-ckpt  runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt \
+    --port 8080
+```
+
+Then open `http://<host>:8080/`. From a laptop with SSH:
+
+```bash
+ssh -L 8080:localhost:8080 <ec2-host>
+# then on the laptop:
+open http://localhost:8080
+```
+
+The UI lets you:
+
+- Upload any image.
+- **Text mode**: type a noun phrase (e.g. `obstacle`, `grass`, `trunk`) and
+  see what each model returns. Adjust the confidence threshold inline.
+- **Click mode**: click points on the image (positive/negative label
+  selectable) and watch both models' masks update side-by-side.
+
+Both models stay warm on the GPU; the image embedding is cached per
+upload, so additional prompts on the same image take ~tens of ms.
 
 ---
 
@@ -238,12 +319,20 @@ python scripts/finetune/eval/evaluate_interactive.py \
     --checkpoint /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
     --output runs/eval/pretrained.json
 
-# Fine-tuned weights from the run above
+# Fine-tuned weights from the run above (use the MERGED checkpoint — see §3.5)
 python scripts/finetune/eval/evaluate_interactive.py \
     --coco data/AWS_SAM_split/test.json \
     --image-root data/AWS_SAM \
-    --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint.pt \
+    --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt \
     --output runs/eval/finetuned.json
+
+# Alternative: if you haven't merged, point at the raw checkpoint and
+# supply the pretrained file as fallback for modules training omitted.
+# python scripts/finetune/eval/evaluate_interactive.py \
+#     ... \
+#     --checkpoint           runs/aws_sam_finetune/checkpoints/checkpoint.pt \
+#     --pretrained-fallback  /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
+#     --output               runs/eval/finetuned.json
 
 # Side-by-side markdown table
 python scripts/finetune/eval/compare_results.py \
@@ -290,9 +379,10 @@ aws configure                # or assume an IAM role with sagemaker:*
 ### Deploy
 
 ```bash
-# Fine-tuned model
+# Fine-tuned model — use the MERGED checkpoint (see §3.5) so the
+# container has every parameter the inference handler needs.
 python scripts/finetune/deploy/deploy.py \
-    --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint.pt \
+    --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt \
     --role arn:aws:iam::<acct>:role/SageMakerRole \
     --bucket <my-sagemaker-bucket> \
     --prefix sam3/aws_sam_v1 \
@@ -359,9 +449,9 @@ python scripts/finetune/benchmark/benchmark_throughput.py \
     --click-points 1 3 5 \
     --output runs/bench/pretrained.json
 
-# Fine-tuned
+# Fine-tuned (use the merged checkpoint — see §3.5)
 python scripts/finetune/benchmark/benchmark_throughput.py \
-    --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint.pt \
+    --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt \
     --output runs/bench/finetuned.json
 ```
 
@@ -386,7 +476,9 @@ data/
     test_vis/<stem>_vis.jpg         # 20 ground-truth overlays
 runs/
   aws_sam_finetune/                 # default ${paths.experiment_log_dir}
-    checkpoints/checkpoint.pt
+    checkpoints/
+      checkpoint.pt                 # raw trainer output (incomplete on its own)
+      checkpoint_merged.pt          # ← canonical artifact, see §3.5 — use this
     tensorboard/
     logs/
     dumps/aws_sam/<predictions>.json

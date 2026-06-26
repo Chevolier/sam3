@@ -25,11 +25,20 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    # PyTorch capped below 2.12 — the 2.12 default wheels are cu130 and
-    # refuse to initialize on CUDA-12.8 drivers (e.g. the A10G hosts here).
-    # Install from https://download.pytorch.org/whl/cu128 to match the driver.
+    # PyTorch pinned to versions with stable cu128 wheels.
+    #   - 2.12+ defaults to cu130 wheels, which need a CUDA 13.x driver.
+    #     Most of our hosts (A10G/L40S/A100/H100/H200) run CUDA 12.8 —
+    #     cu130 builds refuse to initialize on those.
+    #   - Install with: pip install --index-url
+    #       https://download.pytorch.org/whl/cu128 torch torchvision
+    # For Blackwell (B200/B300, CUDA 13.x driver), bypass this cap and
+    # use nightly cu128/cu129 wheels manually:
+    #   pip install --pre --index-url
+    #       https://download.pytorch.org/whl/nightly/cu128 torch torchvision
     "torch>=2.7,<2.12",
-    "torchvision",
+    # torchvision tracks torch one-to-one: tv 0.22→torch 2.7, tv 0.23→2.8,
+    # 0.24→2.9, 0.25→2.10, 0.26→2.11, 0.27→2.12. Cap matches torch<2.12.
+    "torchvision>=0.22,<0.27",
     "timm>=1.0.17",
     "numpy>=1.26,<2",
     "tqdm",

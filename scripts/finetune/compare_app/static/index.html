@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>SAM3 Compare — pretrained vs fine-tuned</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 12px;
+      background: #0f1115;
+      color: #e6e6e6;
+    }
+    h1 {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 0 0 12px 0;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 12px;
+      min-height: 80vh;
+    }
+    /* ===== left rail: test set browser ===== */
+    .rail {
+      background: #1a1d23;
+      border-radius: 8px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: calc(100vh - 30px);
+      overflow: hidden;
+    }
+    .rail h3 {
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0;
+      color: #ccc;
+    }
+    .rail .filter-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .rail select,
+    .rail input {
+      background: #2a2e36;
+      color: #e6e6e6;
+      border: 1px solid #3a3f4a;
+      padding: 5px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      flex: 1;
+      min-width: 0;
+    }
+    .rail .testset-meta {
+      font-size: 11px;
+      color: #888;
+    }
+    .thumbs {
+      overflow-y: auto;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 6px;
+      padding-right: 4px;
+      flex: 1;
+    }
+    .thumb {
+      cursor: pointer;
+      border: 2px solid transparent;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #2a2e36;
+      position: relative;
+    }
+    .thumb.active { border-color: #2d7bf4; }
+    .thumb img {
+      width: 100%;
+      height: 80px;
+      object-fit: cover;
+      display: block;
+    }
+    .thumb .label {
+      font-size: 10px;
+      padding: 2px 4px;
+      color: #aaa;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .rail .pager {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 6px;
+      border-top: 1px solid #2a2e36;
+    }
+    .rail .pager button {
+      background: #2d7bf4;
+      color: white;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .rail .pager button:disabled { background: #444; }
+
+    /* ===== right side: controls + panels ===== */
+    .main {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-width: 0;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      background: #1a1d23;
+      border-radius: 8px;
+    }
+    .controls label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+    }
+    .controls input[type=text],
+    .controls input[type=file],
+    .controls input[type=number] {
+      background: #2a2e36;
+      color: #e6e6e6;
+      border: 1px solid #3a3f4a;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .controls input[type=text] { width: 200px; }
+    .controls input[type=number] { width: 70px; }
+    .controls button {
+      background: #2d7bf4;
+      color: white;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .controls button:hover { background: #4990f8; }
+    .controls button:disabled { background: #444; cursor: not-allowed; }
+    .controls button.secondary { background: #444; }
+    .mode-toggle {
+      display: inline-flex;
+      background: #2a2e36;
+      border-radius: 4px;
+      overflow: hidden;
+      border: 1px solid #3a3f4a;
+    }
+    .mode-toggle button {
+      background: transparent;
+      color: #aaa;
+      padding: 6px 12px;
+      font-size: 13px;
+      border: none;
+      cursor: pointer;
+    }
+    .mode-toggle button.active {
+      background: #2d7bf4;
+      color: white;
+    }
+    .status {
+      font-size: 12px;
+      color: #888;
+    }
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+    }
+    .panel {
+      background: #1a1d23;
+      border-radius: 8px;
+      padding: 10px;
+      min-width: 0;
+    }
+    .panel h2 {
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0 0 8px 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .panel h2 .latency {
+      font-size: 11px;
+      color: #888;
+      font-weight: 400;
+    }
+    .canvas-wrap {
+      position: relative;
+      display: block;
+      width: 100%;
+    }
+    .canvas-wrap canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 4px;
+    }
+    .ft-canvas { cursor: crosshair; }
+    .scores {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #aaa;
+      font-family: ui-monospace, monospace;
+      word-break: break-all;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+      font-size: 11px;
+    }
+    .legend .chip {
+      padding: 3px 8px;
+      border-radius: 10px;
+      background: #2a2e36;
+      color: #ccc;
+      cursor: pointer;
+      user-select: none;
+      border: 1px solid transparent;
+    }
+    .legend .chip:hover { background: #3a3f4a; }
+    .legend .chip.active {
+      border-color: #2d7bf4;
+      background: #1f3a66;
+      color: #fff;
+    }
+    .legend .swatch {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      vertical-align: middle;
+      margin-right: 4px;
+    }
+    .hint {
+      font-size: 12px;
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+  <h1>SAM3 — pretrained vs fine-tuned</h1>
+
+  <div class="layout">
+
+    <!-- ============================== left rail ============================== -->
+    <div class="rail">
+      <h3>Test set</h3>
+      <div class="testset-meta" id="testsetMeta">loading…</div>
+
+      <div class="filter-row">
+        <select id="categoryFilter">
+          <option value="">all categories</option>
+        </select>
+      </div>
+
+      <div class="thumbs" id="thumbs"></div>
+
+      <div class="pager">
+        <button id="pagePrev" disabled>‹ prev</button>
+        <span id="pageInfo" class="testset-meta">—</span>
+        <button id="pageNext" disabled>next ›</button>
+      </div>
+
+      <h3 style="margin-top:6px">Or upload</h3>
+      <input type="file" id="imageFile" accept="image/*" />
+    </div>
+
+    <!-- ============================== main ============================== -->
+    <div class="main">
+      <div class="controls">
+        <div class="mode-toggle">
+          <button id="modeText" class="active">Text</button>
+          <button id="modeClick">Click</button>
+        </div>
+        <label id="textPromptLabel">
+          prompt:
+          <input type="text" id="textPrompt" placeholder="e.g. obstacle" />
+          <span style="font-size:11px;color:#888">conf:</span>
+          <input type="number" id="confidence" value="0.5" step="0.05" min="0" max="1" />
+          <button id="runText">Run</button>
+        </label>
+        <label id="clickPromptLabel" style="display:none">
+          label:
+          <select id="clickLabel" style="background:#2a2e36;color:#e6e6e6;border:1px solid #3a3f4a;padding:6px 8px;border-radius:4px">
+            <option value="1">positive</option>
+            <option value="0">negative</option>
+          </select>
+          <button id="clearClicks" class="secondary">Clear</button>
+          <button id="runClick">Run</button>
+        </label>
+        <span class="status" id="status">Pick a test image or upload one.</span>
+      </div>
+
+      <div class="panels">
+        <div class="panel">
+          <h2><span>Ground Truth</span><span class="latency" id="gtMeta"></span></h2>
+          <div class="canvas-wrap"><canvas id="gtCanvas"></canvas></div>
+          <div class="legend" id="gtLegend"></div>
+        </div>
+        <div class="panel">
+          <h2><span>Pretrained</span><span class="latency" id="preLatency"></span></h2>
+          <div class="canvas-wrap"><canvas id="preCanvas"></canvas></div>
+          <div class="scores" id="preScores"></div>
+        </div>
+        <div class="panel">
+          <h2><span>Fine-tuned</span><span class="latency" id="ftLatency"></span></h2>
+          <div class="canvas-wrap"><canvas id="ftCanvas" class="ft-canvas"></canvas></div>
+          <div class="scores" id="ftScores"></div>
+        </div>
+      </div>
+
+      <div class="hint">
+        Click mode: click on the fine-tuned canvas (right) to add a point of
+        the selected label, then press Run. Image embeddings are cached on
+        the server, so subsequent prompts on the same image are fast.
+      </div>
+    </div>
+
+  </div>
+
+<script>
+const state = {
+  imageId: null,
+  pil: null,              // HTMLImageElement
+  mode: "text",
+  clicks: [],
+  gt: {
+    overlays: [],         // base64 PNGs, one per gt_categories entry
+    categories: [],       // category names, parallel to overlays
+    selected: null,       // category name currently shown alone, or null = all
+  },
+  testset: {
+    pageSize: 20,
+    offset: 0,
+    total: 0,
+    categoryFilter: "",
+    items: [],
+    activeIndex: null,
+  },
+};
+
+const els = {
+  imageFile: document.getElementById("imageFile"),
+  modeText: document.getElementById("modeText"),
+  modeClick: document.getElementById("modeClick"),
+  textPromptLabel: document.getElementById("textPromptLabel"),
+  clickPromptLabel: document.getElementById("clickPromptLabel"),
+  textPrompt: document.getElementById("textPrompt"),
+  confidence: document.getElementById("confidence"),
+  runText: document.getElementById("runText"),
+  clickLabel: document.getElementById("clickLabel"),
+  clearClicks: document.getElementById("clearClicks"),
+  runClick: document.getElementById("runClick"),
+  status: document.getElementById("status"),
+  gtCanvas: document.getElementById("gtCanvas"),
+  preCanvas: document.getElementById("preCanvas"),
+  ftCanvas: document.getElementById("ftCanvas"),
+  preLatency: document.getElementById("preLatency"),
+  ftLatency: document.getElementById("ftLatency"),
+  preScores: document.getElementById("preScores"),
+  ftScores: document.getElementById("ftScores"),
+  gtMeta: document.getElementById("gtMeta"),
+  gtLegend: document.getElementById("gtLegend"),
+  testsetMeta: document.getElementById("testsetMeta"),
+  categoryFilter: document.getElementById("categoryFilter"),
+  thumbs: document.getElementById("thumbs"),
+  pagePrev: document.getElementById("pagePrev"),
+  pageNext: document.getElementById("pageNext"),
+  pageInfo: document.getElementById("pageInfo"),
+};
+
+function setStatus(msg, color) {
+  els.status.textContent = msg;
+  els.status.style.color = color || "#888";
+}
+
+function setMode(m) {
+  state.mode = m;
+  els.modeText.classList.toggle("active", m === "text");
+  els.modeClick.classList.toggle("active", m === "click");
+  els.textPromptLabel.style.display = m === "text" ? "" : "none";
+  els.clickPromptLabel.style.display = m === "click" ? "" : "none";
+}
+
+els.modeText.addEventListener("click", () => setMode("text"));
+els.modeClick.addEventListener("click", () => setMode("click"));
+
+/* =============================== test set =============================== */
+
+async function fetchTestSetList() {
+  const offset = state.testset.offset;
+  const limit = state.testset.pageSize;
+  const cat = state.testset.categoryFilter;
+  const url = `/api/testset/list?offset=${offset}&limit=${limit}` +
+              (cat ? `&category=${encodeURIComponent(cat)}` : "");
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    els.testsetMeta.textContent = "test-set disabled";
+    return;
+  }
+  const j = await resp.json();
+  state.testset.total = j.n_images;
+  state.testset.items = j.items;
+
+  if (!els.categoryFilter.dataset.populated) {
+    for (const c of j.all_categories) {
+      const opt = document.createElement("option");
+      opt.value = c;
+      opt.textContent = c;
+      els.categoryFilter.appendChild(opt);
+    }
+    els.categoryFilter.dataset.populated = "1";
+  }
+  els.testsetMeta.textContent = `${j.n_images} images, ${j.n_categories} cats`;
+  renderThumbs();
+}
+
+function renderThumbs() {
+  els.thumbs.innerHTML = "";
+  for (const item of state.testset.items) {
+    const div = document.createElement("div");
+    div.className = "thumb";
+    if (state.testset.activeIndex === item.image_index) div.classList.add("active");
+    div.dataset.idx = item.image_index;
+    const cats = item.categories.slice(0, 3).join(",") + (item.categories.length > 3 ? "…" : "");
+    div.innerHTML = `
+      <img alt="" />
+      <div class="label" title="${item.file_name}\\n${item.categories.join(', ')}">${cats || "(empty)"}</div>
+    `;
+    div.addEventListener("click", () => loadTestImage(item.image_index));
+    els.thumbs.appendChild(div);
+  }
+  // Thumb images load lazily once user opens them; pre-fetch with low-res
+  // via the same /api/testset/load is heavy. Skip server preview for now —
+  // just label by category to keep startup snappy. We replace placeholder
+  // images with a 1x1 transparent on miss.
+  const blank = "data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=";
+  els.thumbs.querySelectorAll("img").forEach((im) => { im.src = blank; });
+
+  // Pager state.
+  const off = state.testset.offset;
+  const limit = state.testset.pageSize;
+  const total = state.testset.total;
+  els.pageInfo.textContent = `${off + 1}-${Math.min(off + limit, total)} / ${total}`;
+  els.pagePrev.disabled = off === 0;
+  els.pageNext.disabled = off + limit >= total;
+}
+
+els.pagePrev.addEventListener("click", () => {
+  state.testset.offset = Math.max(0, state.testset.offset - state.testset.pageSize);
+  fetchTestSetList();
+});
+els.pageNext.addEventListener("click", () => {
+  state.testset.offset += state.testset.pageSize;
+  fetchTestSetList();
+});
+els.categoryFilter.addEventListener("change", () => {
+  state.testset.categoryFilter = els.categoryFilter.value;
+  state.testset.offset = 0;
+  fetchTestSetList();
+});
+
+async function loadTestImage(imageIndex) {
+  setStatus(`Loading test image #${imageIndex}…`);
+  const resp = await fetch("/api/testset/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_index: imageIndex }),
+  });
+  if (!resp.ok) {
+    setStatus(`load failed: ${resp.status}`, "#f87171");
+    return;
+  }
+  const j = await resp.json();
+  state.imageId = j.image_id;
+  state.testset.activeIndex = imageIndex;
+  state.clicks = [];
+
+  // Update thumb selection.
+  renderThumbs();
+
+  const img = new Image();
+  img.onload = () => {
+    state.pil = img;
+    drawBase();
+    // Render GT overlay in the left-most panel.
+    drawGT(j);
+    setStatus(`Loaded ${j.file_name} (${j.width}×${j.height}) — GT cats: ${j.gt_categories.join(', ') || '(none)'}`);
+    // Clear prediction canvases until the user runs a prompt.
+    clearPredictions();
+  };
+  img.src = "data:image/png;base64," + j.image_b64;
+}
+
+function drawGT(j) {
+  // Cache so legend clicks can re-render without a round-trip.
+  state.gt.overlays = j.gt_overlays || [];
+  state.gt.categories = j.gt_categories || [];
+  state.gt.selected = null;  // start by showing all categories
+  renderGT();
+}
+
+function renderGT() {
+  const c = els.gtCanvas;
+  c.width = state.pil.naturalWidth;
+  c.height = state.pil.naturalHeight;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(state.pil, 0, 0);
+
+  const total = state.gt.categories.length;
+  if (total === 0) {
+    els.gtMeta.textContent = "no GT for this image";
+  } else if (state.gt.selected === null) {
+    els.gtMeta.textContent = `${total} categories (click a label to isolate)`;
+  } else {
+    els.gtMeta.textContent = `showing "${state.gt.selected}" (click again to see all)`;
+  }
+
+  // Render the active overlay(s). If a category is selected, render only
+  // that one; otherwise render all.
+  const indices = state.gt.selected === null
+    ? state.gt.categories.map((_, i) => i)
+    : [state.gt.categories.indexOf(state.gt.selected)].filter((i) => i >= 0);
+
+  indices.forEach((idx) => {
+    const im = new Image();
+    im.onload = () => ctx.drawImage(im, 0, 0);
+    im.src = "data:image/png;base64," + state.gt.overlays[idx];
+  });
+
+  // Build / refresh the clickable category legend.
+  els.gtLegend.innerHTML = "";
+  state.gt.categories.forEach((cat) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    if (state.gt.selected === cat) chip.classList.add("active");
+    chip.textContent = cat;
+    chip.title = `Click to isolate "${cat}" and prefill the text prompt`;
+    chip.addEventListener("click", () => selectGTCategory(cat));
+    els.gtLegend.appendChild(chip);
+  });
+}
+
+function selectGTCategory(cat) {
+  // Toggle: click an active chip to clear selection and show all.
+  state.gt.selected = (state.gt.selected === cat) ? null : cat;
+  renderGT();
+  // When selecting (not clearing), copy the label into the text prompt
+  // and switch to text mode for one-keystroke comparison.
+  if (state.gt.selected !== null) {
+    els.textPrompt.value = state.gt.selected;
+    setMode("text");
+    setStatus(`Category "${cat}" set as prompt. Press Run to compare.`);
+  } else {
+    setStatus("Showing all GT categories.");
+  }
+}
+
+function clearPredictions() {
+  for (const [c, latEl, scoresEl] of [
+    [els.preCanvas, els.preLatency, els.preScores],
+    [els.ftCanvas, els.ftLatency, els.ftScores],
+  ]) {
+    c.width = state.pil.naturalWidth;
+    c.height = state.pil.naturalHeight;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(state.pil, 0, 0);
+    latEl.textContent = "";
+    scoresEl.textContent = "(run a prompt)";
+  }
+  drawClickMarkers();
+}
+
+/* =============================== upload =============================== */
+
+els.imageFile.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const b64 = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+  setStatus("Uploading…");
+  const resp = await fetch("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_b64: b64 }),
+  });
+  if (!resp.ok) {
+    setStatus("upload failed: " + resp.status, "#f87171");
+    return;
+  }
+  const j = await resp.json();
+  state.imageId = j.image_id;
+  state.clicks = [];
+  state.testset.activeIndex = null;
+  renderThumbs();
+
+  const img = new Image();
+  img.onload = () => {
+    state.pil = img;
+    state.gt = { overlays: [], categories: [], selected: null };
+    drawBase();
+    // No GT for uploaded images.
+    els.gtMeta.textContent = "no GT (uploaded image)";
+    els.gtLegend.innerHTML = "";
+    const ctx = els.gtCanvas.getContext("2d");
+    els.gtCanvas.width = img.naturalWidth;
+    els.gtCanvas.height = img.naturalHeight;
+    ctx.drawImage(img, 0, 0);
+    clearPredictions();
+    setStatus(`Loaded ${j.width}×${j.height}. Run a prompt.`);
+  };
+  img.src = b64;
+});
+
+/* =============================== shared draw =============================== */
+
+function drawBase() {
+  // Init all three canvases with the raw image (overlays draw on top).
+  for (const c of [els.preCanvas, els.ftCanvas]) {
+    c.width = state.pil.naturalWidth;
+    c.height = state.pil.naturalHeight;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(state.pil, 0, 0);
+  }
+  drawClickMarkers();
+}
+
+function drawOverlays(canvas, overlays_b64) {
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(state.pil, 0, 0);
+  let pending = overlays_b64.length;
+  if (pending === 0) {
+    drawClickMarkers();
+    return;
+  }
+  overlays_b64.forEach((b64) => {
+    const im = new Image();
+    im.onload = () => {
+      ctx.drawImage(im, 0, 0);
+      pending -= 1;
+      if (pending === 0) drawClickMarkers();
+    };
+    im.src = "data:image/png;base64," + b64;
+  });
+}
+
+function drawClickMarkers() {
+  for (const c of [els.preCanvas, els.ftCanvas]) {
+    const ctx = c.getContext("2d");
+    state.clicks.forEach(([x, y, label]) => {
+      ctx.beginPath();
+      ctx.arc(x, y, 8, 0, Math.PI * 2);
+      ctx.fillStyle = label === 1 ? "rgba(74, 222, 128, 0.9)" : "rgba(248, 113, 113, 0.9)";
+      ctx.fill();
+      ctx.strokeStyle = "white";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+  }
+}
+
+els.ftCanvas.addEventListener("click", (e) => {
+  if (state.mode !== "click" || !state.pil) return;
+  const rect = els.ftCanvas.getBoundingClientRect();
+  const scaleX = els.ftCanvas.width / rect.width;
+  const scaleY = els.ftCanvas.height / rect.height;
+  const x = Math.round((e.clientX - rect.left) * scaleX);
+  const y = Math.round((e.clientY - rect.top) * scaleY);
+  const label = parseInt(els.clickLabel.value, 10);
+  state.clicks.push([x, y, label]);
+  drawBase();
+  setStatus(`${state.clicks.length} click(s) staged. Press Run.`);
+});
+
+els.clearClicks.addEventListener("click", () => {
+  state.clicks = [];
+  drawBase();
+  setStatus("Clicks cleared.");
+});
+
+function fmtScores(scores) {
+  if (!scores.length) return "(no masks)";
+  return "scores: " + scores.map((s) => s.toFixed(3)).join(", ");
+}
+
+async function runText() {
+  if (!state.imageId) return setStatus("Pick or upload an image first.", "#f87171");
+  const text = els.textPrompt.value.trim();
+  if (!text) return setStatus("Enter a text prompt.", "#f87171");
+  setStatus("Running…");
+  els.runText.disabled = true;
+  try {
+    const resp = await fetch("/api/text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_id: state.imageId,
+        text,
+        confidence: parseFloat(els.confidence.value),
+      }),
+    });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const j = await resp.json();
+    renderCompare(j);
+    setStatus(`text="${text}" → pre:${j.pretrained.n_masks} masks, ft:${j.finetuned.n_masks} masks`);
+  } catch (e) {
+    setStatus("error: " + e.message, "#f87171");
+  } finally {
+    els.runText.disabled = false;
+  }
+}
+
+async function runClick() {
+  if (!state.imageId) return setStatus("Pick or upload an image first.", "#f87171");
+  if (!state.clicks.length) return setStatus("Add at least one click.", "#f87171");
+  setStatus("Running…");
+  els.runClick.disabled = true;
+  try {
+    const resp = await fetch("/api/click", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_id: state.imageId,
+        clicks: state.clicks,
+        multimask: true,
+      }),
+    });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const j = await resp.json();
+    renderCompare(j);
+    setStatus(`${state.clicks.length} click(s) → pre:${j.pretrained.n_masks} masks, ft:${j.finetuned.n_masks} masks`);
+  } catch (e) {
+    setStatus("error: " + e.message, "#f87171");
+  } finally {
+    els.runClick.disabled = false;
+  }
+}
+
+function renderCompare(j) {
+  drawOverlays(els.preCanvas, j.pretrained.mask_overlays);
+  drawOverlays(els.ftCanvas, j.finetuned.mask_overlays);
+  els.preLatency.textContent = j.pretrained.elapsed_ms.toFixed(0) + " ms";
+  els.ftLatency.textContent = j.finetuned.elapsed_ms.toFixed(0) + " ms";
+  els.preScores.textContent = fmtScores(j.pretrained.scores);
+  els.ftScores.textContent = fmtScores(j.finetuned.scores);
+}
+
+els.runText.addEventListener("click", runText);
+els.runClick.addEventListener("click", runClick);
+els.textPrompt.addEventListener("keydown", (e) => { if (e.key === "Enter") runText(); });
+
+// Boot.
+fetchTestSetList().catch((e) => {
+  els.testsetMeta.textContent = "test-set disabled";
+  console.warn(e);
+});
+</script>
+</body>
+</html>

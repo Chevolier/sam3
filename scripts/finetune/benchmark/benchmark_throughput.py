@@ -100,7 +100,15 @@ def main() -> None:
         default="grass",
         help="Noun phrase used in the text-prompt benchmark.",
     )
-    parser.add_argument("--checkpoint", type=Path, default=None)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="SAM3 checkpoint. For a fine-tuned model, pass the *merged* "
+        "checkpoint (see scripts/finetune/merge_checkpoint.py) so the "
+        "click-predictor parameters are present. Omit to use facebook/sam3 "
+        "from HuggingFace.",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
         "--bpe-path", default="sam3/assets/bpe_simple_vocab_16e6.txt.gz"
@@ -136,6 +144,16 @@ def main() -> None:
     )
     processor = Sam3Processor(model, device=args.device)
 
+    # SAM3's fused MLP kernels (perflib.fused.addmm_act, called inside the
+    # ViT trunk) cast inputs to bf16. Without a surrounding bf16 autocast,
+    # downstream Linear layers see a (bf16 × fp32) mismatch and crash.
+    # Each timed block runs inside this context.
+    amp = (
+        torch.autocast("cuda", dtype=torch.bfloat16)
+        if args.device.startswith("cuda")
+        else torch.autocast("cpu", dtype=torch.bfloat16, enabled=False)
+    )
+
     n_images = args.num_iters + args.warmup
     paths = gather_images(args.image_dir, n_images, args.seed)
     images = [Image.open(p).convert("RGB") for p in paths]
@@ -156,7 +174,7 @@ def main() -> None:
     if not args.skip_set_image:
         print("[bench] set_image-only ...")
         latencies: list[float] = []
-        with torch.inference_mode():
+        with torch.inference_mode(), amp:
             for i, img in enumerate(images):
                 cuda_sync(args.device)
                 t0 = time.perf_counter()
@@ -175,7 +193,7 @@ def main() -> None:
         print(f"[bench] text-prompt ('{args.text_prompt}') ...")
         full: list[float] = []
         prompt_only: list[float] = []
-        with torch.inference_mode():
+        with torch.inference_mode(), amp:
             for i, img in enumerate(images):
                 cuda_sync(args.device)
                 t0 = time.perf_counter()
@@ -205,7 +223,7 @@ def main() -> None:
             print(f"[bench] click-prompt n={n_clicks} ...")
             full = []
             prompt_only = []
-            with torch.inference_mode():
+            with torch.inference_mode(), amp:
                 for i, img in enumerate(images):
                     pts, labs = random_clicks(img, n_clicks, rng)
                     cuda_sync(args.device)

@@ -161,8 +161,13 @@ def text_prompt_zero_click(
     if masks is None or len(masks) == 0:
         return np.zeros_like(gt_mask, dtype=np.uint8)
     if isinstance(masks, torch.Tensor):
-        masks = masks.detach().cpu().numpy()
+        # Cast to fp32 first — autocast may return bf16, which numpy can't handle.
+        masks = masks.detach().to(torch.float32).cpu().numpy()
     masks = np.asarray(masks).astype(np.uint8)
+    # Sam3Processor.set_text_prompt returns masks as (N, 1, H, W); squeeze
+    # the channel dim so each candidate is (H, W) and matches gt_mask.
+    if masks.ndim == 4 and masks.shape[1] == 1:
+        masks = masks[:, 0]
     if masks.ndim == 2:
         masks = masks[None]
     # pick the candidate with highest IoU vs GT
@@ -236,8 +241,7 @@ def evaluate_one_instance(
     # --- click 1 — center of GT, multimask_output=True, take best by score ---
     seed = distance_transform_peak(gt_mask)
     if seed is None:
-        # GT empty (shouldn't happen, but guard); fill with zeros and quit.
-        zeros = np.zeros_like(gt_mask, dtype=np.uint8)
+        # GT empty (shouldn't happen, but guard).
         for k in (1, 3):
             iou_at[k] = 0.0
             biou_at[k] = 0.0
@@ -393,6 +397,16 @@ def main() -> None:
         default=None,
         help="Path to a fine-tuned SAM3 checkpoint. Omit to use facebook/sam3 from HF.",
     )
+    parser.add_argument(
+        "--pretrained-fallback",
+        type=Path,
+        default=None,
+        help="Path to the pretrained SAM3 checkpoint to use as a fallback for "
+        "submodules the fine-tuned checkpoint didn't include (e.g. "
+        "sam2_convs, inst_interactive_predictor, tracker). The trainer only "
+        "saves modules that were built during training, so the click "
+        "predictor stays at random init unless we fill it from pretrained.",
+    )
     parser.add_argument("--output", type=Path, default=Path("runs/eval/results.json"))
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--bpe-path", default="sam3/assets/bpe_simple_vocab_16e6.txt.gz")
@@ -428,17 +442,58 @@ def main() -> None:
     from sam3 import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
 
-    print(f"[eval] building model (checkpoint={args.checkpoint})")
+    # When a fine-tuned checkpoint is given, pre-load the pretrained weights
+    # first so submodules the trainer never built (sam2_convs,
+    # inst_interactive_predictor, tracker) start from sensible weights
+    # rather than random init. Then layer the fine-tuned dict on top.
+    initial_ckpt = args.pretrained_fallback if (args.checkpoint and args.pretrained_fallback) else args.checkpoint
+    print(f"[eval] building model (initial_ckpt={initial_ckpt})")
     model = build_sam3_image_model(
         bpe_path=str(args.bpe_path),
         device=args.device,
         eval_mode=True,
         enable_segmentation=True,
         enable_inst_interactivity=True,
-        checkpoint_path=str(args.checkpoint) if args.checkpoint else None,
-        load_from_HF=args.checkpoint is None,
+        checkpoint_path=str(initial_ckpt) if initial_ckpt else None,
+        load_from_HF=initial_ckpt is None,
     )
+
+    # Overlay fine-tuned weights on top of the pretrained-initialized model.
+    if args.checkpoint and args.pretrained_fallback:
+        print(f"[eval] overlaying fine-tuned weights from {args.checkpoint}")
+        ft_ckpt = torch.load(str(args.checkpoint), map_location="cpu", weights_only=False)
+        if isinstance(ft_ckpt, dict) and "model" in ft_ckpt and isinstance(ft_ckpt["model"], dict):
+            ft_state = ft_ckpt["model"]
+        else:
+            ft_state = ft_ckpt
+        # Make sure the keys are unprefixed (trainer-format usually are).
+        if any(k.startswith("detector.") for k in ft_state):
+            ft_state = {
+                k.replace("detector.", ""): v for k, v in ft_state.items() if k.startswith("detector.")
+            }
+        # Move tensors to the model's device before load to avoid host->device
+        # copies during load_state_dict (esp. on multi-GPU setups).
+        target_device = next(model.parameters()).device
+        ft_state = {k: v.to(target_device) if hasattr(v, "to") else v for k, v in ft_state.items()}
+        missing, unexpected = model.load_state_dict(ft_state, strict=False)
+        print(
+            f"[eval] overlay: loaded={len(ft_state) - len(unexpected)}, "
+            f"missing={len(missing)} (kept from pretrained), "
+            f"unexpected={len(unexpected)}"
+        )
+
     processor = Sam3Processor(model, device=args.device)
+
+    # SAM3's fused MLP kernels (perflib.fused.addmm_act, in vitdet.Mlp.forward)
+    # cast inputs to bf16 internally, so the surrounding tensors must be bf16
+    # too. Wrap every forward pass in this context to avoid the
+    # "mat1 and mat2 must have the same dtype, but got BFloat16 and Float"
+    # crash that surfaces in some code paths.
+    amp_ctx = (
+        torch.autocast("cuda", dtype=torch.bfloat16)
+        if str(args.device).startswith("cuda")
+        else torch.autocast("cpu", dtype=torch.bfloat16, enabled=False)
+    )
 
     with open(args.coco, "r") as f:
         coco = json.load(f)
@@ -456,7 +511,7 @@ def main() -> None:
             break
         n_seen += 1
         try:
-            with torch.inference_mode():
+            with torch.inference_mode(), amp_ctx:
                 row = evaluate_one_instance(
                     model,
                     processor,

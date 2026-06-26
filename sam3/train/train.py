@@ -53,6 +53,15 @@ def single_proc_run(local_rank, main_port, cfg, world_size):
     except Exception as e:
         logging.info(e)
 
+    # Disable cuDNN's SDPA backend. On Blackwell (SM 10.0, e.g. p6-b300)
+    # cuDNN's frontend can return "no valid execution plans" for the ViT
+    # attention shapes (B, 16 heads, ~5k tokens, head_dim 64). Forcing
+    # SDPA to skip cuDNN lets it pick FA2 / memory-efficient / math.
+    try:
+        torch.backends.cuda.enable_cudnn_sdp(False)
+    except AttributeError:
+        pass
+
     trainer = instantiate(cfg.trainer, _recursive_=False)
     trainer.run()
 

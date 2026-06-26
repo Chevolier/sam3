@@ -153,3 +153,4 @@ Thumbs.db
 *.vocab
 
 data/
+logs/
