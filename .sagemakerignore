@@ -1,0 +1,56 @@
+# Excluded from SageMaker training-job source_dir uploads.
+# The PyTorch estimator tars up source_dir and ships it to the
+# container at /opt/ml/code/; anything not needed at training time
+# bloats the tarball, slows job startup, and costs S3 egress.
+#
+# Dataset + pretrained weights come in via SageMaker `channels` (S3),
+# NOT the source bundle.
+
+# === Large data + outputs (never needed in the container) ===
+data/
+runs/
+logs/
+
+# === Local eval / benchmark outputs ===
+runs/eval/
+runs/bench/
+runs/deploy/
+
+# === Git + IDE metadata ===
+.git/
+.github/
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+*.swp
+
+# === Python bytecode + virtual envs ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+env/
+
+# === Jupyter ===
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# === macOS / OS noise ===
+.DS_Store
+Thumbs.db
+
+# === Large model artifacts that should come via the `pretrained` channel ===
+*.pt
+*.pth
+*.safetensors
+!sam3/assets/*.txt.gz   # but DO keep the BPE vocab — sam3 package data
