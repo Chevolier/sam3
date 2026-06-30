@@ -655,6 +655,19 @@ class Sam3Image(torch.nn.Module):
         # Mirrors the setup in Sam3Image.predict_inst:633-657, but uses
         # the actual batch size instead of forcing 1.
         sam2_bb = backbone_out["sam2_backbone_out"]
+        # Project the two highest-res FPN levels through conv_s0/conv_s1
+        # so the mask decoder's upscaler can residually-add them at the
+        # right channel counts (32 and 64 respectively, vs the raw 256
+        # the backbone emits). At inference time Sam3Processor.set_image
+        # does this; the training-time forward must replicate it.
+        sam_dec = self.inst_interactive_predictor.model.sam_mask_decoder
+        if getattr(sam_dec, "use_high_res_features", False):
+            # Avoid mutating the input dict — make a shallow copy so the
+            # find-stage path (which uses sam2_backbone_out separately
+            # via the neck) doesn't see the projected features.
+            sam2_bb = {**sam2_bb, "backbone_fpn": list(sam2_bb["backbone_fpn"])}
+            sam2_bb["backbone_fpn"][0] = sam_dec.conv_s0(sam2_bb["backbone_fpn"][0])
+            sam2_bb["backbone_fpn"][1] = sam_dec.conv_s1(sam2_bb["backbone_fpn"][1])
         (_, vision_feats, _, _) = (
             self.inst_interactive_predictor.model._prepare_backbone_features(sam2_bb)
         )
