@@ -663,6 +663,41 @@ def build_sam3_image_model(
     if checkpoint_path is not None:
         _load_checkpoint(model, checkpoint_path)
 
+    # When the click predictor is built for image-only training, freeze
+    # the SAM-2 video-tracker memory / object-pointer parameters. Those
+    # modules are never reached by image-only click inference (the
+    # forward goes through sam_prompt_encoder + sam_mask_decoder only),
+    # so leaving them trainable causes DDP's find_unused_parameters
+    # check to crash on iter 2 with "Parameter indices which did not
+    # receive grad". They stay at their pretrained values — fine because
+    # we're not doing video training here.
+    if enable_inst_interactivity and inst_predictor is not None:
+        # The image-only click branch goes through sam_prompt_encoder +
+        # sam_mask_decoder only. Everything under inst_interactive_predictor
+        # that's NOT in that path is video-tracker memory machinery and
+        # won't receive any gradient — DDP rejects that on iter 2 with
+        # "Parameter indices which did not receive grad". Freeze those.
+        _CLICK_TRAINABLE_SUBSTRINGS = (
+            ".sam_prompt_encoder.",
+            ".sam_mask_decoder.",
+        )
+        _FROZEN_NAMES_FOR_LOG = []
+        for name, param in model.named_parameters():
+            if not name.startswith("inst_interactive_predictor."):
+                continue
+            if any(s in name for s in _CLICK_TRAINABLE_SUBSTRINGS):
+                continue
+            param.requires_grad = False
+            _FROZEN_NAMES_FOR_LOG.append(name)
+        if _FROZEN_NAMES_FOR_LOG:
+            import logging
+            logging.info(
+                f"[builder] froze {len(_FROZEN_NAMES_FOR_LOG)} SAM-2 "
+                f"video-tracker params in inst_interactive_predictor "
+                f"(image-only training; not reached by the click branch). "
+                f"First 5: {_FROZEN_NAMES_FOR_LOG[:5]}"
+            )
+
     # Setup device and mode
     model = _setup_device_and_mode(model, device, eval_mode)
 
