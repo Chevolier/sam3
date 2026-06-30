@@ -311,6 +311,7 @@ trainer:
     # (requires `hf auth login`).
     checkpoint_path: ${paths.sam3_pretrained_ckpt}
     load_from_HF: False
+    enable_inst_interactivity: True
 
   meters:
     val:

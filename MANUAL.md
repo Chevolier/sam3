@@ -133,6 +133,17 @@ python sam3/train/train.py \
     --num-gpus 8
 ```
 
+### Remote training on SageMaker
+
+`scripts/finetune/sagemaker/launch_sagemaker_training.ipynb` packages the
+repo + this config and launches a SageMaker TrainingJob. The entry-point
+script (`train_entry.py`) patches the YAML to use SageMaker channel paths,
+runs `sam3/train/train.py`, then merges the resulting checkpoint into a
+self-contained `checkpoint_merged.pt` that SageMaker uploads to S3.
+Use this when you want managed multi-GPU training without the on-prem
+GPUs. Open the notebook, edit the AWS / S3 / instance settings in the
+first cell, then run all.
+
 ### Override paths from the command line
 
 By default the config reads `${oc.env:PWD}/data/AWS_SAM`,
@@ -194,6 +205,48 @@ and remove the `Masks` and `loss_fn_semantic_seg` entries from
 `aws_sam_train.loss` (or copy the bbox-only loss block from
 `configs/roboflow_v100/roboflow_v100_full_ft_100_images.yaml` verbatim).
 Keeps memory ~30 % lower.
+
+### Monitor training with TensorBoard
+
+The trainer writes scalars (per-component losses, LR per group, gradient
+norms, iter time) to `${experiment_log_dir}/tensorboard/` every
+`log_freq: 10` iterations. To watch them live:
+
+```bash
+pip install tensorboard   # ships with the [train] extra
+tensorboard --logdir runs/aws_sam_finetune/tensorboard \
+    --host 0.0.0.0 --port 6006
+```
+
+Then open `http://<host>:6006/`. From a laptop with SSH:
+
+```bash
+ssh -L 6006:localhost:6006 <ec2-host>
+open http://localhost:6006
+```
+
+What to look at:
+
+| Tag prefix | What it tells you |
+|---|---|
+| `Losses/train_all_loss` | Overall objective. Headline number; should trend down. |
+| `Losses/train_all_loss_bbox`, `loss_giou` | Detection box quality. |
+| `Losses/train_all_loss_ce`, `presence_loss` | Classification & presence head. |
+| `Losses/train_all_loss_mask`, `loss_dice` | Per-instance mask quality. |
+| `Losses/train_all_loss_semantic_seg`, `loss_semantic_dice` | Semantic-seg head. |
+| `Losses/train_all_miou_semantic_seg` | **The cleanest sanity-check signal** — running mIoU of the seg head on the training batch. Should climb steadily. |
+| `Trainer/where` | Fraction of the schedule completed (0 → 1 over `max_epochs`). |
+| `Trainer/epoch`, `steps_train` | Position counters. |
+
+Practical tips:
+
+- Watch `train_all_miou_semantic_seg` rather than the raw `train_all_loss`
+  — the total is heavily weighted (200 × mask + 30 × semantic_dice + …)
+  and looks alarming in absolute terms (≈ 300 is normal). mIoU is on a
+  [0, 1] scale and is the better health signal.
+- TensorBoard auto-refreshes; no need to restart on each epoch.
+- Multiple runs side-by-side: keep `experiment_log_dir` distinct per
+  run, then point `tensorboard --logdir runs/` at the parent directory.
 
 ---
 
@@ -328,11 +381,12 @@ python scripts/finetune/eval/evaluate_interactive.py \
 
 # Alternative: if you haven't merged, point at the raw checkpoint and
 # supply the pretrained file as fallback for modules training omitted.
-# python scripts/finetune/eval/evaluate_interactive.py \
-#     ... \
-#     --checkpoint           runs/aws_sam_finetune/checkpoints/checkpoint.pt \
-#     --pretrained-fallback  /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
-#     --output               runs/eval/finetuned.json
+python scripts/finetune/eval/evaluate_interactive.py \
+    --coco data/AWS_SAM_split/test.json \
+    --image-root data/AWS_SAM \
+    --checkpoint           runs/aws_sam_finetune/checkpoints/checkpoint_2.pt \
+    --pretrained-fallback  /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
+    --output               runs/eval/finetuned_ckpt2.json
 
 # Side-by-side markdown table
 python scripts/finetune/eval/compare_results.py \
