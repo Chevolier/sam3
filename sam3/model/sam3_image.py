@@ -610,6 +610,7 @@ class Sam3Image(torch.nn.Module):
             click_outputs = self._forward_click_branch_train(
                 backbone_out=backbone_out,
                 find_target=find_target,
+                find_input=find_input,
                 input=input,
             )
             stage_outs[0].update(click_outputs)
@@ -621,6 +622,7 @@ class Sam3Image(torch.nn.Module):
         self,
         backbone_out: Dict,
         find_target,           # BatchedFindTarget — has packed segments + num_boxes
+        find_input,            # BatchedFindInput — has img_ids per query
         input: BatchedDatapoint,
         num_clicks: int = 3,
         multimask_output: bool = True,
@@ -674,11 +676,19 @@ class Sam3Image(torch.nn.Module):
         img_h, img_w = input.img_batch.shape[-2:]
 
         # ---- 2. Map every GT instance to its source image index.
-        # find_target.num_boxes is (B,) with N_i instances per image i;
-        # find_target.segments is (sum N_i, H, W). Build a per-instance
-        # img_idx tensor so we can gather image features per click.
+        # The dataset replicates each image across `category_chunk_size`
+        # datapoints (each querying a different category subset), so the
+        # collator's per-query arrays have length B*chunks, not B.
+        #
+        # - find_target.num_boxes is (Q,) — instance count per query.
+        # - find_target.segments is (sum N_q, H, W) packed across queries.
+        # - find_input.img_ids is (Q,) — image index in img_batch per query.
+        #
+        # Map each instance back to its image by repeating each query's
+        # img_id by num_boxes[q].
         gt_masks = find_target.segments               # (N_total, H, W) bool
-        num_per_img = find_target.num_boxes           # (B,) long
+        num_per_query = find_target.num_boxes         # (Q,) long
+        img_ids_per_query = find_input.img_ids        # (Q,) long
         is_valid = find_target.is_valid_segment       # (N_total,) bool or None
         n_total = gt_masks.shape[0]
         device = gt_masks.device
@@ -692,7 +702,8 @@ class Sam3Image(torch.nn.Module):
             }
 
         img_idx_per_inst = torch.repeat_interleave(
-            torch.arange(batch_size, device=device), num_per_img
+            img_ids_per_query.to(device=device, dtype=torch.long),
+            num_per_query,
         )                                              # (N_total,) long
 
         # GT masks may not match the image resolution exactly — they're
