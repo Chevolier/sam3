@@ -62,26 +62,52 @@ cells = [
     """),
 
     code("""
+        # Pin sagemaker<3 — the v3 SDK (sagemaker>=3.0) is a major rewrite
+        # that moves PyTorch estimator + Session + get_execution_role out
+        # of their canonical paths. This notebook targets the long-stable
+        # v2 API.
+        %pip install --quiet 'sagemaker>=2.230,<3' boto3
+        # IMPORTANT: after installing, restart the kernel before running
+        # the next cell — otherwise a previously-imported v3 module stays
+        # cached.
+    """),
+
+    code("""
         # ---------- Configuration: edit these ----------
         import os
+        import sagemaker
+        import boto3
 
-        # AWS / S3
-        ROLE             = "arn:aws:iam::<acct>:role/SageMakerRole"
-        REGION           = os.environ.get("AWS_REGION", "us-west-2")
-        S3_BUCKET        = "my-sagemaker-bucket"
+        # Sanity-check SDK version. The v3 SDK has a different layout and
+        # this notebook is written against v2. The cell above pins
+        # sagemaker<3.
+        _v = getattr(sagemaker, "__version__", "unknown")
+        if _v.startswith("3.") or _v.startswith("4."):
+            raise RuntimeError(
+                f"Detected sagemaker {_v}, but this notebook requires v2.x. "
+                f"Run the previous cell, then RESTART THE KERNEL, then retry."
+            )
+        print("sagemaker version:", _v)
+
+        # v2-style imports (re-exported at top-level).
+        from sagemaker import get_execution_role
+
+        sess = sagemaker.Session()
+        role = get_execution_role()
+        sagemaker_default_bucket = sess.default_bucket()
+        region = sess.boto_session.region_name
+        print("sagemaker_default_bucket:", sagemaker_default_bucket)
+        print("sagemaker_region:", region)
+
         S3_PREFIX        = "sam3/aws_sam_finetune_v1"
 
         # Local paths (these get uploaded to s3 once at launch time)
-        LOCAL_REPO_ROOT  = os.path.abspath(os.path.join(os.path.dirname(""), "..", "..", "..", ".."))
-        # ^ resolves to the sam3 repo root when this notebook lives at
-        # scripts/finetune/sagemaker/launch_sagemaker_training.ipynb
-        # — adjust if you moved the notebook.
-
+        LOCAL_REPO_ROOT  = "/home/ec2-user/SageMaker/efs/Projects/sam3"
         LOCAL_DATA       = "/home/ec2-user/SageMaker/efs/Projects/sam3/data"             # contains AWS_SAM/ and AWS_SAM_split/
         LOCAL_PRETRAINED = "/home/ec2-user/SageMaker/efs/Models/sam3"                    # contains sam3.pt
 
         # Instance & training settings
-        INSTANCE_TYPE    = "ml.p4d.24xlarge"     # 8 × A100 40GB. Use ml.p5.48xlarge for 8 × H100.
+        INSTANCE_TYPE    = "ml.p4de.24xlarge"     # 8 × A100 80GB. Use ml.p5.48xlarge for 8 × H100.
         INSTANCE_COUNT   = 1                     # multi-node not wired up yet
         NUM_GPUS         = 8                     # per-instance
         MAX_RUNTIME_S    = 24 * 3600

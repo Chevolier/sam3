@@ -420,9 +420,9 @@ python scripts/finetune/eval/evaluate_interactive.py \
 python scripts/finetune/eval/evaluate_interactive.py \
     --coco data/AWS_SAM_split/test.json \
     --image-root data/AWS_SAM \
-    --checkpoint           runs/aws_sam_finetune/checkpoints/checkpoint_2.pt \
+    --checkpoint           runs/aws_sam_finetune_click/checkpoints/checkpoint_1.pt \
     --pretrained-fallback  /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
-    --output               runs/eval/finetuned_ckpt2.json
+    --output               runs/eval/finetuned_click_ckpt1.json
 
 # Side-by-side markdown table
 python scripts/finetune/eval/compare_results.py \
