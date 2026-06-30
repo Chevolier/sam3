@@ -597,8 +597,207 @@ class Sam3Image(torch.nn.Module):
             )
             stage_outs.append(out)
 
+        # Click-prompt training branch — runs only when the SAM-1-style
+        # interactive predictor was built (enable_inst_interactivity=True)
+        # AND we have GT instance masks AND we're in training mode. The
+        # results get attached to stage_outs[0] under "click_*" keys for
+        # ClickMaskLoss to consume.
+        if (
+            self.training
+            and self.inst_interactive_predictor is not None
+            and find_target.segments is not None
+        ):
+            click_outputs = self._forward_click_branch_train(
+                backbone_out=backbone_out,
+                find_target=find_target,
+                input=input,
+            )
+            stage_outs[0].update(click_outputs)
+
         previous_stages_out.append(stage_outs)
         return previous_stages_out
+
+    def _forward_click_branch_train(
+        self,
+        backbone_out: Dict,
+        find_target,           # BatchedFindTarget — has packed segments + num_boxes
+        input: BatchedDatapoint,
+        num_clicks: int = 3,
+        multimask_output: bool = True,
+    ) -> Dict:
+        """SAM-style iterative click training, runs alongside the find-stage
+        forward and produces outputs consumed by ClickMaskLoss.
+
+        Each click iteration:
+          1. For each GT instance, look up the matching image features.
+          2. Compute prompt embeddings (point clicks + previous low-res mask).
+          3. Run the mask decoder → (low_res_masks, iou_predictions).
+          4. Use the predicted mask to pick the next correction click for
+             iteration 2..N (placed at the worst-error region of the
+             argmax-IoU candidate from this step).
+
+        Returns a dict with keys consumed by sam3.train.loss.click_loss:
+            click_multistep_pred_multimasks_high_res: list of (N, M, H, W)
+            click_multistep_pred_ious:                list of (N, M)
+            click_multistep_object_score_logits:      list of None
+
+        where N is the total GT instance count across the batch and M is
+        3 if multimask_output else 1.
+        """
+        from sam3.train.transforms.click_sampling import (
+            sample_correction_clicks_batch,
+            sample_seed_clicks,
+        )
+
+        # ---- 1. Set up the inst predictor's image features (batched).
+        # Mirrors the setup in Sam3Image.predict_inst:633-657, but uses
+        # the actual batch size instead of forcing 1.
+        sam2_bb = backbone_out["sam2_backbone_out"]
+        (_, vision_feats, _, _) = (
+            self.inst_interactive_predictor.model._prepare_backbone_features(sam2_bb)
+        )
+        vision_feats[-1] = (
+            vision_feats[-1] + self.inst_interactive_predictor.model.no_mem_embed
+        )
+        batch_size = input.img_batch.shape[0]
+        feats = [
+            feat.permute(1, 2, 0).view(batch_size, -1, *feat_size)
+            for feat, feat_size in zip(
+                vision_feats[::-1],
+                self.inst_interactive_predictor._bb_feat_sizes[::-1],
+            )
+        ][::-1]
+        # We don't monkey-patch _features here; we just hold them locally
+        # and reach into predictor.model directly. Cleaner under autograd.
+        image_embed_batched = feats[-1]            # (B, C, H_e, W_e)
+        high_res_feats_batched = feats[:-1]        # list of (B, C, H, W)
+        img_h, img_w = input.img_batch.shape[-2:]
+
+        # ---- 2. Map every GT instance to its source image index.
+        # find_target.num_boxes is (B,) with N_i instances per image i;
+        # find_target.segments is (sum N_i, H, W). Build a per-instance
+        # img_idx tensor so we can gather image features per click.
+        gt_masks = find_target.segments               # (N_total, H, W) bool
+        num_per_img = find_target.num_boxes           # (B,) long
+        is_valid = find_target.is_valid_segment       # (N_total,) bool or None
+        n_total = gt_masks.shape[0]
+        device = gt_masks.device
+
+        # Bail early if the batch has zero instances or no valid GT segments.
+        if n_total == 0 or (is_valid is not None and not is_valid.any()):
+            return {
+                "click_multistep_pred_multimasks_high_res": [],
+                "click_multistep_pred_ious": [],
+                "click_multistep_object_score_logits": [],
+            }
+
+        img_idx_per_inst = torch.repeat_interleave(
+            torch.arange(batch_size, device=device), num_per_img
+        )                                              # (N_total,) long
+
+        # GT masks may not match the image resolution exactly — they're
+        # stored at the resolution after the dataset's resize transforms.
+        # Match to the model's input image resolution so the per-pixel
+        # click coords align with the predicted masks.
+        if gt_masks.shape[-2:] != (img_h, img_w):
+            gt_masks_at_img_res = torch.nn.functional.interpolate(
+                gt_masks.unsqueeze(1).float(),
+                size=(img_h, img_w),
+                mode="nearest",
+            ).squeeze(1).bool()
+        else:
+            gt_masks_at_img_res = gt_masks.bool()
+
+        # ---- 3. Sample the seed clicks (one positive per GT instance).
+        points_xy, labels = sample_seed_clicks(gt_masks_at_img_res)
+        # (N, 1, 2) and (N, 1)
+
+        # ---- 4. Run iterative click steps.
+        multistep_masks = []   # each: (N, M, H, W) at image resolution
+        multistep_ious = []    # each: (N, M)
+        prev_low_res_mask = None  # passed back as mask_input next step
+
+        for click_i in range(num_clicks):
+            # Each instance has its own image — gather features per instance.
+            # image_embed_per_inst: (N, C, H_e, W_e)
+            image_embed_per_inst = image_embed_batched[img_idx_per_inst]
+            high_res_per_inst = [
+                hr[img_idx_per_inst] for hr in high_res_feats_batched
+            ]
+
+            # Run prompt encoder. Points must be a (coords, labels) tuple.
+            # We treat each instance as its own "image" (batch dim N).
+            sparse_emb, dense_emb = self.inst_interactive_predictor.model.sam_prompt_encoder(
+                points=(points_xy, labels),
+                boxes=None,
+                masks=prev_low_res_mask,
+            )
+
+            # Mask decoder. repeat_image=False because we already gathered
+            # per-instance image_embed.
+            low_res_masks, iou_predictions, _, _ = (
+                self.inst_interactive_predictor.model.sam_mask_decoder(
+                    image_embeddings=image_embed_per_inst,
+                    image_pe=self.inst_interactive_predictor.model.sam_prompt_encoder.get_dense_pe(),
+                    sparse_prompt_embeddings=sparse_emb,
+                    dense_prompt_embeddings=dense_emb,
+                    multimask_output=multimask_output,
+                    repeat_image=False,
+                    high_res_features=high_res_per_inst,
+                )
+            )
+            # low_res_masks: (N, M, 256, 256)
+            # iou_predictions: (N, M)
+
+            # Upsample masks to image resolution. We do NOT threshold —
+            # the loss wants logits.
+            masks_at_img_res = torch.nn.functional.interpolate(
+                low_res_masks.float(),
+                size=(img_h, img_w),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+            multistep_masks.append(masks_at_img_res)
+            multistep_ious.append(iou_predictions)
+
+            # ---- 5. Sample the next correction click using the argmax-IoU
+            # candidate mask (training simulation of how a user would react
+            # to whichever candidate the model would surface at inference).
+            if click_i + 1 < num_clicks:
+                with torch.no_grad():
+                    best_idx = iou_predictions.argmax(dim=1)         # (N,)
+                    batch_inds = torch.arange(n_total, device=device)
+                    best_masks = masks_at_img_res[batch_inds, best_idx]  # (N, H, W)
+                    pred_binary = best_masks > 0.0
+                    new_pts, new_labels, valid_mask = (
+                        sample_correction_clicks_batch(pred_binary, gt_masks_at_img_res)
+                    )
+                # Concatenate the new click onto the running list. For
+                # instances where no correction is needed (perfect match),
+                # we still append (0,0) with valid_mask=False — but those
+                # rows contribute almost nothing to the loss since the
+                # prompt encoder treats the dummy positive click as a
+                # no-op refinement.
+                points_xy = torch.cat([points_xy, new_pts], dim=1)        # (N, k+1, 2)
+                labels = torch.cat([labels, new_labels], dim=1)           # (N, k+1)
+                # Feed the previous step's selected low-res mask as the
+                # next-step mask_input. SAM convention: pass low-res masks
+                # only, clamped to [-32, 32] to avoid extreme values.
+                prev_low_res_mask = torch.clamp(
+                    low_res_masks[batch_inds, best_idx].unsqueeze(1),
+                    -32.0,
+                    32.0,
+                ).detach()
+                # Detach to break the autograd graph across click steps —
+                # otherwise memory explodes through num_clicks of decoders.
+                # SAM 2's training does the same.
+
+        return {
+            "click_multistep_pred_multimasks_high_res": multistep_masks,
+            "click_multistep_pred_ious": multistep_ious,
+            "click_multistep_object_score_logits": [None] * len(multistep_masks),
+        }
 
     def _compute_matching(self, out, targets):
         out["indices"] = self.matcher(out, targets)

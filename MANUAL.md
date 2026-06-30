@@ -133,6 +133,42 @@ python sam3/train/train.py \
     --num-gpus 8
 ```
 
+### Click-prompt fine-tune (SAM-2-style)
+
+The default `aws_sam_finetune.yaml` builds the model with
+`enable_inst_interactivity=False`, so the SAM-1-style click predictor is
+**not trained** — only its text/detector pathway gets gradient signal.
+This means click-mode metrics (NoC@95, mIoU @ 1 click) gain only
+indirectly through the shared image encoder. To get the full click-mode
+benefit, use the new preset:
+
+```bash
+nohup python sam3/train/train.py \
+    -c configs/aws_sam/aws_sam_finetune_click.yaml \
+    --use-cluster 0 \
+    --num-gpus 8 > logs/train_click.out 2>&1 &
+```
+
+What's different from the base recipe:
+
+- `enable_inst_interactivity: True` builds the `SAM3InteractiveImagePredictor`
+  submodule (~150 M params) at training time.
+- `Sam3Image._forward_click_branch_train` runs inside `forward()` per step:
+  samples a seed click at each GT centroid, then 2 correction clicks at the
+  worst-error region of the previous step's prediction, calls the mask
+  decoder iteratively, and returns lists of `(N, M, H, W)` multistep mask
+  logits + `(N, M)` IoU predictions.
+- `ClickMaskLoss` (`sam3.train.loss.click_loss.ClickMaskLoss`) is added
+  to `loss_fns_find`. Supervises best-of-3 candidate mask with focal+dice
+  and the iou_predictions head with MSE. Weights: `loss_click_mask: 200`,
+  `loss_click_dice: 10`, `loss_click_iou: 1`.
+- Default `train_batch_size: 4` (vs 8 in the base preset) since the click
+  branch adds ~30% memory pressure per step. Tune up if you have headroom.
+
+The merge step (§3.5) works identically — `merge_checkpoint.py` produces
+a `checkpoint_merged.pt` that the eval / compare-app / deploy scripts
+consume without changes.
+
 ### Remote training on SageMaker
 
 `scripts/finetune/sagemaker/launch_sagemaker_training.ipynb` packages the

@@ -196,7 +196,9 @@ class ClickMaskLoss(LossWithWeights):
         num_boxes,
     ):
         # Broadcast GT to all M candidates so per-candidate losses align.
-        target_masks_bcast = target_masks.expand_as(src_masks)
+        # .contiguous() because sigmoid_focal_loss's triton kernel does an
+        # in-place .view() and rejects strided expand_as views.
+        target_masks_bcast = target_masks.expand_as(src_masks).contiguous()
 
         loss_multimask = sigmoid_focal_loss(
             src_masks,
