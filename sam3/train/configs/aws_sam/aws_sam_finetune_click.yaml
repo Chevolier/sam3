@@ -246,7 +246,14 @@ trainer:
 
   distributed:
     backend: gloo
-    find_unused_parameters: True
+    # static_graph + find_unused_parameters=False is the recommended DDP
+    # config when the unused-param set is STABLE across iters (which it
+    # is here — the same SAM-2 video-tracker layers stay unused every
+    # step). With find_unused_parameters=True, DDP rebuilds the bucket
+    # plan on iter 2 and SIGSEGVs in the all-reduce. static_graph=True
+    # snapshots the iter-1 plan and reuses it, sidestepping the issue.
+    find_unused_parameters: False
+    static_graph: True
     gradient_as_bucket_view: True
 
   loss:
