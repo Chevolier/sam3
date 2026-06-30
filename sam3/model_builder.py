@@ -676,14 +676,39 @@ def build_sam3_image_model(
         # sam_mask_decoder only. Everything under inst_interactive_predictor
         # that's NOT in that path is video-tracker memory machinery and
         # won't receive any gradient — DDP rejects that on iter 2 with
-        # "Parameter indices which did not receive grad". Freeze those.
+        # "Parameter indices which did not receive grad".
         _CLICK_TRAINABLE_SUBSTRINGS = (
             ".sam_prompt_encoder.",
             ".sam_mask_decoder.",
         )
+        # Additionally, even inside sam_mask_decoder there are submodules
+        # whose outputs we *discard* in the click forward (object_score
+        # head — we set ClickMaskLoss.pred_obj_scores=False, so its
+        # logits don't contribute to loss). Freeze those too, otherwise
+        # their weights get bucketed but never receive grad and DDP
+        # still complains on iter 2.
+        _ALSO_FREEZE = (
+            # Object-score head: its output goes into _ in our forward
+            # (we use multimask_output=True and ClickMaskLoss has
+            # pred_obj_scores=False), so no gradient reaches it.
+            ".sam_mask_decoder.pred_obj_score_head.",
+            ".sam_mask_decoder.obj_score_token.",
+            # Box-prompt embeddings: point_embeddings[2] and [3] handle
+            # box top-left / bottom-right corner labels. Our click forward
+            # only uses point labels 0/1, so these stay unused.
+            ".sam_prompt_encoder.point_embeddings.2.",
+            ".sam_prompt_encoder.point_embeddings.3.",
+            # Padding-label embedding: used when label==-1 padded clicks
+            # are passed. Our forward never pads.
+            ".sam_prompt_encoder.not_a_point_embed.",
+        )
         _FROZEN_NAMES_FOR_LOG = []
         for name, param in model.named_parameters():
             if not name.startswith("inst_interactive_predictor."):
+                continue
+            if any(s in name for s in _ALSO_FREEZE):
+                param.requires_grad = False
+                _FROZEN_NAMES_FOR_LOG.append(name)
                 continue
             if any(s in name for s in _CLICK_TRAINABLE_SUBSTRINGS):
                 continue
@@ -692,10 +717,11 @@ def build_sam3_image_model(
         if _FROZEN_NAMES_FOR_LOG:
             import logging
             logging.info(
-                f"[builder] froze {len(_FROZEN_NAMES_FOR_LOG)} SAM-2 "
-                f"video-tracker params in inst_interactive_predictor "
-                f"(image-only training; not reached by the click branch). "
-                f"First 5: {_FROZEN_NAMES_FOR_LOG[:5]}"
+                f"[builder] froze {len(_FROZEN_NAMES_FOR_LOG)} non-click "
+                f"params in inst_interactive_predictor (image-only "
+                f"training; not contributing to loss). "
+                f"First 5: {_FROZEN_NAMES_FOR_LOG[:5]}  "
+                f"Last 5: {_FROZEN_NAMES_FOR_LOG[-5:]}"
             )
 
     # Setup device and mode
