@@ -211,8 +211,8 @@ scratch:
 
   # Click-train uses ~1.5GB more per GPU than the text-only fine-tune;
   # consider lowering batch_size if you hit OOM.
-  val_batch_size: 4
-  train_batch_size: 4
+  val_batch_size: 16
+  train_batch_size: 16
   gradient_accumulation_steps: 1
 
   collate_fn:
