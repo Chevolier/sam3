@@ -31,7 +31,7 @@ Under the hood:
 2. **Upload cells** — one-time push of `data/AWS_SAM*` and the local
    `sam3.pt` pretrained checkpoint to S3.
 3. **Staging cell** — builds a slim source-bundle directory
-   (`~/sam3_sagemaker_staging`) containing just `sam3/`, `sagemaker/`,
+   (`tmp/s3_sagemaker_staging/` — under `.gitignore`) containing just `sam3/`, `sagemaker/`,
    `scripts/`, and package metadata. **This is important**: SDK v2 tars
    `source_dir` in full, and pointing it at the repo root would upload
    the entire `data/` and `runs/` trees — silently hangs the launch.
