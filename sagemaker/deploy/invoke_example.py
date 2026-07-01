@@ -3,12 +3,12 @@
 """Smoke-test invocation of a deployed SAM3 SageMaker endpoint.
 
 Usage:
-  python scripts/finetune/deploy/invoke_example.py \
+  python sagemaker/deploy/invoke_example.py \
       --endpoint sam3-aws-sam \
       --image data/AWS_SAM/companypremises2025101600217.png \
       --text grass
 
-  python scripts/finetune/deploy/invoke_example.py \
+  python sagemaker/deploy/invoke_example.py \
       --endpoint sam3-aws-sam \
       --image <path> \
       --click 520 375

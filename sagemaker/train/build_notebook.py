@@ -2,7 +2,7 @@
 """Generate launch_sagemaker_training.ipynb from a Python definition.
 
 Cleaner than hand-editing JSON. Run once after you change the cell text:
-    python scripts/finetune/sagemaker/build_notebook.py
+    python sagemaker/train/build_notebook.py
 """
 
 from __future__ import annotations
@@ -217,10 +217,10 @@ cells = [
         )
 
         # The SDK looks for source_dir/entry_point. Because train_entry.py
-        # lives under scripts/finetune/sagemaker/, we need to tell the SDK
+        # lives under sagemaker/train/, we need to tell the SDK
         # to look there for the entry point. The cleanest way is to set
         # entry_point as a relative path under source_dir:
-        estimator.entry_point = "scripts/finetune/sagemaker/train_entry.py"
+        estimator.entry_point = "sagemaker/train/train_entry.py"
 
         print("Estimator built. ImageURI:", estimator.training_image_uri())
     """),

@@ -16,7 +16,7 @@ Run from the repo root, on a host with AWS creds + the `sagemaker` SDK
 installed (`pip install sagemaker boto3`).
 
 Example:
-  python scripts/finetune/deploy/deploy.py \
+  python sagemaker/deploy/deploy.py \
       --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint.pt \
       --role arn:aws:iam::123456789012:role/SageMakerRole \
       --bucket my-sagemaker-bucket \
@@ -91,7 +91,7 @@ def main() -> None:
     parser.add_argument("--bpe-path", type=Path,
                         default=Path("sam3/assets/bpe_simple_vocab_16e6.txt.gz"))
     parser.add_argument("--code-dir", type=Path,
-                        default=Path("scripts/finetune/deploy"))
+                        default=Path("sagemaker/deploy"))
     parser.add_argument("--out-tar", type=Path,
                         default=Path("runs/deploy/model.tar.gz"))
     parser.add_argument("--dry-run", action="store_true",
@@ -152,7 +152,7 @@ def main() -> None:
     print(f"[deploy] endpoint ready: {predictor.endpoint_name}")
     print(
         "[deploy] invoke with the boto3 SageMaker runtime client; see "
-        "scripts/finetune/deploy/invoke_example.py for a working sample."
+        "sagemaker/deploy/invoke_example.py for a working sample."
     )
 
 

@@ -171,7 +171,7 @@ consume without changes.
 
 ### Remote training on SageMaker
 
-`scripts/finetune/sagemaker/launch_sagemaker_training.ipynb` packages the
+`sagemaker/train/launch_training.ipynb` packages the
 repo + this config and launches a SageMaker TrainingJob. The entry-point
 script (`train_entry.py`) patches the YAML to use SageMaker channel paths,
 runs `sam3/train/train.py`, then merges the resulting checkpoint into a
@@ -454,7 +454,7 @@ aggregated summary; `compare_results.py` only reads the summary.
 
 ## 6. SageMaker real-time endpoint
 
-`scripts/finetune/deploy/` contains a SageMaker PyTorch deployment for
+`sagemaker/deploy/` contains a SageMaker PyTorch deployment for
 both the pretrained and the fine-tuned model. The handler
 (`inference.py`) accepts JSON requests in two modes — text prompt or
 SAM-1-style click prompt — and returns COCO-RLE encoded masks.
@@ -471,7 +471,7 @@ aws configure                # or assume an IAM role with sagemaker:*
 ```bash
 # Fine-tuned model — use the MERGED checkpoint (see §3.5) so the
 # container has every parameter the inference handler needs.
-python scripts/finetune/deploy/deploy.py \
+python sagemaker/deploy/deploy.py \
     --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt \
     --role arn:aws:iam::<acct>:role/SageMakerRole \
     --bucket <my-sagemaker-bucket> \
@@ -480,7 +480,7 @@ python scripts/finetune/deploy/deploy.py \
     --endpoint-name sam3-aws-sam
 
 # Pretrained (downloads facebook/sam3 inside the container on cold start)
-python scripts/finetune/deploy/deploy.py --pretrained --role <ARN> --bucket <BUCKET>
+python sagemaker/deploy/deploy.py --pretrained --role <ARN> --bucket <BUCKET>
 ```
 
 What it does:
@@ -494,13 +494,13 @@ What it does:
 
 ```bash
 # Text prompt
-python scripts/finetune/deploy/invoke_example.py \
+python sagemaker/deploy/invoke_example.py \
     --endpoint sam3-aws-sam \
     --image data/AWS_SAM/companypremises2025101600217.png \
     --text grass
 
 # Click prompt
-python scripts/finetune/deploy/invoke_example.py \
+python sagemaker/deploy/invoke_example.py \
     --endpoint sam3-aws-sam --image <path> --click 520 375
 ```
 
