@@ -417,12 +417,12 @@ python scripts/finetune/eval/evaluate_interactive.py \
 
 # Alternative: if you haven't merged, point at the raw checkpoint and
 # supply the pretrained file as fallback for modules training omitted.
-python scripts/finetune/eval/evaluate_interactive.py \
+nohup python -u scripts/finetune/eval/evaluate_interactive.py \
     --coco data/AWS_SAM_split/test.json \
     --image-root data/AWS_SAM \
-    --checkpoint           runs/aws_sam_finetune_click/checkpoints/checkpoint_1.pt \
+    --checkpoint           runs/aws_sam_finetune_click/checkpoints/checkpoint_6.pt \
     --pretrained-fallback  /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
-    --output               runs/eval/finetuned_click_ckpt1.json
+    --output               runs/eval/finetuned_click_ckpt6.json > logs/finetuned_click_ckpt6.out 2>&1 &
 
 # Side-by-side markdown table
 python scripts/finetune/eval/compare_results.py \
