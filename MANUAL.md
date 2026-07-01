@@ -420,9 +420,9 @@ python scripts/finetune/eval/evaluate_interactive.py \
 nohup python -u scripts/finetune/eval/evaluate_interactive.py \
     --coco data/AWS_SAM_split/test.json \
     --image-root data/AWS_SAM \
-    --checkpoint           runs/aws_sam_finetune_click/checkpoints/checkpoint_6.pt \
+    --checkpoint           runs/aws_sam_finetune_click/checkpoints/checkpoint_9.pt \
     --pretrained-fallback  /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
-    --output               runs/eval/finetuned_click_ckpt6.json > logs/finetuned_click_ckpt6.out 2>&1 &
+    --output               runs/eval/finetuned_click_ckpt9.json > logs/finetuned_click_ckpt9.out 2>&1 &
 
 # Side-by-side markdown table
 python scripts/finetune/eval/compare_results.py \
@@ -607,3 +607,14 @@ runs/
 - **Benchmark numbers swing wildly** — raise `--warmup` (default 5,
   bump to 20 for a fresh CUDA context) and pin the GPU via
   `nvidia-smi -lgc <freq>` if you need clock-stable measurements.
+
+
+```bash
+python scripts/finetune/eval/compare_local_vs_endpoint.py \
+      --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt \
+      --endpoint   sam3-aws-sam-20260701-092709 \
+      --image      data/AWS_SAM/2_camera1_color_image_raw_131.jpg \
+      --text       grass \
+      --confidence 0.5 \
+      --output     runs/eval/compare
+```
