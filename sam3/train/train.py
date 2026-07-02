@@ -41,11 +41,33 @@ def handle_custom_resolving(cfg):
     return cfg_resolved
 
 
-def single_proc_run(local_rank, main_port, cfg, world_size):
-    """Single GPU process"""
-    os.environ["MASTER_ADDR"] = "localhost"
+def single_proc_run(
+    local_rank,
+    main_port,
+    cfg,
+    world_size,
+    master_addr: str = "localhost",
+    node_rank: int = 0,
+    gpus_per_node: int | None = None,
+):
+    """Single GPU process.
+
+    Multi-node: `master_addr` is the rendezvous host (rank-0's node),
+    `node_rank` is the 0-indexed index of THIS node in the job, and
+    `gpus_per_node` is the per-node process count. Global rank is then
+    `node_rank * gpus_per_node + local_rank`, which is what DDP expects
+    for cross-node all-reduce.
+
+    Single-node: pass the defaults (master="localhost", node_rank=0);
+    world_size == gpus_per_node and global_rank == local_rank.
+    """
+    if gpus_per_node is None:
+        gpus_per_node = world_size
+    global_rank = node_rank * gpus_per_node + local_rank
+
+    os.environ["MASTER_ADDR"] = master_addr
     os.environ["MASTER_PORT"] = str(main_port)
-    os.environ["RANK"] = str(local_rank)
+    os.environ["RANK"] = str(global_rank)
     os.environ["LOCAL_RANK"] = str(local_rank)
     os.environ["WORLD_SIZE"] = str(world_size)
     try:
@@ -67,23 +89,66 @@ def single_proc_run(local_rank, main_port, cfg, world_size):
 
 
 def single_node_runner(cfg, main_port: int):
-    assert cfg.launcher.num_nodes == 1
-    # assert cfg.launcher.gpus_per_node == 1
-    num_proc = cfg.launcher.gpus_per_node
+    """Local (single or multi) node runner.
+
+    In the single-node case, everything runs at `localhost` and the total
+    world size is just `gpus_per_node`.
+
+    In the multi-node case, the launcher (SageMaker's train_entry.py, or
+    another orchestrator) is expected to set the following env vars
+    BEFORE invoking sam3/train/train.py:
+        SAM3_MASTER_ADDR     hostname of rank-0's node
+        SAM3_MASTER_PORT     TCP port on that host
+        SAM3_NODE_RANK       0-indexed rank of this node
+        SAM3_NUM_NODES       total number of nodes
+    This function reads them, computes the correct global rank per
+    local proc, and spawns `gpus_per_node` workers per node. The workers
+    then rendezvous via the env-based DDP init.
+    """
+    gpus_per_node = cfg.launcher.gpus_per_node
+
+    # Prefer explicit env from the launcher over the cfg — SageMaker
+    # doesn't know what `cfg.launcher.num_nodes` says.
+    num_nodes = int(os.environ.get("SAM3_NUM_NODES", cfg.launcher.num_nodes))
+    node_rank = int(os.environ.get("SAM3_NODE_RANK", 0))
+    master_addr = os.environ.get("SAM3_MASTER_ADDR", "localhost")
+    master_port = int(os.environ.get("SAM3_MASTER_PORT", main_port))
+    world_size = num_nodes * gpus_per_node
+
+    if num_nodes > 1:
+        logging.info(
+            f"[train.py] multi-node: node_rank={node_rank}/{num_nodes} "
+            f"gpus_per_node={gpus_per_node} world_size={world_size} "
+            f"master={master_addr}:{master_port}"
+        )
+
     torch.multiprocessing.set_start_method(
         "spawn"
     )  # CUDA runtime does not support `fork`
-    if num_proc == 1:
+    if gpus_per_node == 1 and num_nodes == 1:
         # directly call single_proc so we can easily set breakpoints
         # mp.spawn does not let us set breakpoints
-        single_proc_run(local_rank=0, main_port=main_port, cfg=cfg, world_size=num_proc)
+        single_proc_run(
+            local_rank=0,
+            main_port=master_port,
+            cfg=cfg,
+            world_size=world_size,
+            master_addr=master_addr,
+            node_rank=node_rank,
+            gpus_per_node=gpus_per_node,
+        )
     else:
         mp_runner = torch.multiprocessing.start_processes
-        args = (main_port, cfg, num_proc)
+        args = (master_port, cfg, world_size, master_addr, node_rank, gpus_per_node)
         # Note: using "fork" below, "spawn" causes time and error regressions. Using
         # spawn changes the default multiprocessing context to spawn, which doesn't
         # interact well with the dataloaders (likely due to the use of OpenCV).
-        mp_runner(single_proc_run, args=args, nprocs=num_proc, start_method="spawn")
+        mp_runner(
+            single_proc_run,
+            args=args,
+            nprocs=gpus_per_node,
+            start_method="spawn",
+        )
 
 
 def format_exception(e: Exception, limit=20):

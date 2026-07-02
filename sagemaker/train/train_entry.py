@@ -175,6 +175,61 @@ def _replace_yaml_scalar(text: str, key: str, value) -> str:
     return "\n".join(out_lines) + "\n"
 
 
+def _resolve_multinode_env() -> dict:
+    """Read SageMaker's multi-node env vars and translate them into the
+    `SAM3_*` vars our train.py::single_node_runner expects.
+
+    SageMaker sets these on every training instance:
+        SM_HOSTS         JSON list, e.g. '["algo-1","algo-2"]'
+        SM_CURRENT_HOST  this instance's hostname, e.g. "algo-2"
+        SM_NUM_HOSTS     integer stringified
+
+    Single-instance jobs still get these (with a length-1 host list),
+    so the logic below degrades cleanly to single-node.
+
+    Master is always the FIRST host in SM_HOSTS (sorted lexicographically
+    by SageMaker), so every worker resolves the same rendezvous target.
+    """
+    hosts_json = os.environ.get("SM_HOSTS")
+    current = os.environ.get("SM_CURRENT_HOST")
+    if not hosts_json or not current:
+        # Not running under SageMaker (or single-node local dev) —
+        # leave envs unset, single_node_runner falls back to localhost.
+        return {}
+    try:
+        hosts = json.loads(hosts_json)
+    except json.JSONDecodeError as e:
+        print(f"[train_entry] malformed SM_HOSTS ({e}); falling back to single-node")
+        return {}
+    if not isinstance(hosts, list) or not hosts:
+        return {}
+
+    master = hosts[0]
+    num_nodes = len(hosts)
+    try:
+        node_rank = hosts.index(current)
+    except ValueError:
+        print(
+            f"[train_entry] SM_CURRENT_HOST={current!r} not in SM_HOSTS={hosts!r}; "
+            "assuming node_rank=0"
+        )
+        node_rank = 0
+
+    env_out = {
+        "SAM3_MASTER_ADDR": master,
+        "SAM3_MASTER_PORT": os.environ.get("SAM3_MASTER_PORT", "29500"),
+        "SAM3_NODE_RANK":   str(node_rank),
+        "SAM3_NUM_NODES":   str(num_nodes),
+    }
+    if num_nodes > 1:
+        print(
+            f"[train_entry] multi-node: {node_rank+1}/{num_nodes} — "
+            f"master={master}:{env_out['SAM3_MASTER_PORT']} "
+            f"(this host: {current})"
+        )
+    return env_out
+
+
 def run_training(config_path: Path, args: argparse.Namespace) -> None:
     """Invoke sam3/train/train.py with the derived config."""
     # train.py calls initialize_config_module("sam3.train", ...), so
@@ -183,11 +238,19 @@ def run_training(config_path: Path, args: argparse.Namespace) -> None:
     # "configs/" prefix so Hydra can resolve them under sam3/train/
     # configs/.
     relative = config_path.relative_to(Path("sam3/train"))
+
+    # Detect multi-node topology from SageMaker's SM_HOSTS / SM_CURRENT_HOST.
+    # Adds SAM3_MASTER_ADDR / SAM3_NODE_RANK / SAM3_NUM_NODES to the env
+    # we hand to train.py.
+    multinode_env = _resolve_multinode_env()
+    num_nodes = int(multinode_env.get("SAM3_NUM_NODES", "1"))
+
     cmd = [
         sys.executable, "-u", "sam3/train/train.py",  # -u = unbuffered stdout/stderr
         "-c", str(relative),
         "--use-cluster", "0",
         "--num-gpus", str(args.num_gpus),
+        "--num-nodes", str(num_nodes),
     ]
     print(f"[train_entry] launching: {' '.join(cmd)}")
 
@@ -251,6 +314,11 @@ def run_training(config_path: Path, args: argparse.Namespace) -> None:
         print(f"[train_entry] LD_LIBRARY_PATH prepended with {cudnn_lib}")
     else:
         print("[train_entry] WARNING: bundled nvidia-cudnn-cu12 not found; conv may abort")
+
+    # Multi-node rendezvous info (empty dict when single-node, so this
+    # is a no-op there). SAM3_* takes precedence over any legacy
+    # MASTER_ADDR / RANK values that might already be in os.environ.
+    env.update(multinode_env)
 
     subprocess.run(cmd, check=True, env=env)
 
