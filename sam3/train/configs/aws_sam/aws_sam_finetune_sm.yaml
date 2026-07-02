@@ -28,7 +28,16 @@ paths:
   sam3_pretrained_ckpt: /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt
 
 aws_sam_train:
-  num_images: null  # null = use all available images
+  # Shrink the "epoch" to a handful of steps by capping the dataset.
+  # With num_images=200 + train_batch_size=8 + num_gpus=8, an epoch is
+  # ~200 / (8*8) = ~3 optimizer steps. `save_freq: 1` in the trainer
+  # config below then dumps a checkpoint every ~3 steps, so you get
+  # frequent snapshots for smoke-testing without patching the trainer.
+  # For a real training run: set this back to `null` and reset
+  # `max_epochs` / `scheduler_*` / `val_epoch_freq` to their full-run
+  # values (was: 20 / 20 / 5). See the notes at the top of MANUAL.md
+  # for the recipe.
+  num_images: 200
   train_transforms:
     - _target_: sam3.train.transforms.basic_for_api.ComposeAPI
       transforms:
@@ -193,21 +202,37 @@ scratch:
   lr_language_backbone: ${times:5e-5,${scratch.lr_scale}}
   lrd_vision_backbone: 0.9
   wd: 0.1
+  # Scheduler knobs are in OPTIMIZER STEPS, not epochs. Full-run values
+  # were 20 (against ~40 steps/epoch × 20 epochs = ~800 total steps).
+  # With the smoke-test config (num_images=200 → ~3 steps/epoch × 200
+  # epochs = ~600 steps), keep them at 20 so the LR shape still matches.
+  # Only tune these if you change either num_images or max_epochs.
   scheduler_timescale: 20
   scheduler_warmup: 20
   scheduler_cooldown: 20
 
-  val_batch_size: 16
+  val_batch_size: 8
+  # With gradient_accumulation_steps > 1 the DataLoader must yield a
+  # LIST of `accum_steps` micro-batch dicts, not a single dict — the
+  # trainer asserts this at trainer.py:919. `collate_fn_api` returns a
+  # bare dict; `collate_fn_api_with_chunking` wraps it and splits the
+  # batch across `num_chunks`. train_batch_size here is the TOTAL sample
+  # count fed to the collate — it's split into `gradient_accumulation_steps`
+  # micro-batches downstream, so `micro-batch = train_batch_size /
+  # accum_steps` = 4 in the current setup, matching the per-step memory
+  # of a naive train_batch_size=4 run.
   train_batch_size: 16
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 2
 
   collate_fn:
-    _target_: sam3.train.data.collator.collate_fn_api
+    _target_: sam3.train.data.collator.collate_fn_api_with_chunking
     _partial_: true
+    num_chunks: ${scratch.gradient_accumulation_steps}
     repeats: ${scratch.hybrid_repeats}
     dict_key: all
     with_seg_masks: ${scratch.enable_segmentation}
 
+  # Val doesn't do gradient accumulation — plain collate_fn_api is fine.
   collate_fn_val:
     _target_: sam3.train.data.collator.collate_fn_api
     _partial_: true
@@ -222,11 +247,19 @@ trainer:
   _target_: sam3.train.trainer.Trainer
   skip_saving_ckpts: false   # save checkpoints
   empty_gpu_mem_cache_after_eval: True
-  skip_first_val: True
-  max_epochs: 20
+  # For the SMOKE-TEST config below (num_images=200), each "epoch" is
+  # only ~3 optimizer steps, so we validate every epoch and skip the
+  # "first val" gating that would otherwise defer the first eval too
+  # long. Reset to skip_first_val=True + val_epoch_freq=5 for real
+  # training.
+  skip_first_val: False
+  # 200 epochs × ~3 steps/epoch = ~600 total optimizer steps, roughly
+  # matches the total step count of the previous 20-epoch full-dataset
+  # run. Bump this back to 20 (or higher) when reverting num_images=null.
+  max_epochs: 200
   accelerator: cuda
   seed_value: 123
-  val_epoch_freq: 5
+  val_epoch_freq: 1
   mode: train
   gradient_accumulation_steps: ${scratch.gradient_accumulation_steps}
 
