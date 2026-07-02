@@ -37,7 +37,7 @@ aws_sam_train:
   # `max_epochs` / `scheduler_*` / `val_epoch_freq` to their full-run
   # values (was: 20 / 20 / 5). See the notes at the top of MANUAL.md
   # for the recipe.
-  num_images: 200
+  num_images: null
   train_transforms:
     - _target_: sam3.train.transforms.basic_for_api.ComposeAPI
       transforms:
@@ -221,7 +221,7 @@ scratch:
   # micro-batches downstream, so `micro-batch = train_batch_size /
   # accum_steps` = 4 in the current setup, matching the per-step memory
   # of a naive train_batch_size=4 run.
-  train_batch_size: 8
+  train_batch_size: 16
   gradient_accumulation_steps: 2
 
   collate_fn:
@@ -256,7 +256,7 @@ trainer:
   # 200 epochs × ~3 steps/epoch = ~600 total optimizer steps, roughly
   # matches the total step count of the previous 20-epoch full-dataset
   # run. Bump this back to 20 (or higher) when reverting num_images=null.
-  max_epochs: 200
+  max_epochs: 10
   accelerator: cuda
   seed_value: 123
   val_epoch_freq: 1
