@@ -221,7 +221,7 @@ scratch:
   # micro-batches downstream, so `micro-batch = train_batch_size /
   # accum_steps` = 4 in the current setup, matching the per-step memory
   # of a naive train_batch_size=4 run.
-  train_batch_size: 16
+  train_batch_size: 8
   gradient_accumulation_steps: 2
 
   collate_fn:
