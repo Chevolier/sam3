@@ -37,6 +37,16 @@ SM_CHANNEL_TRAIN = Path(os.environ.get("SM_CHANNEL_TRAIN", "/opt/ml/input/data/t
 SM_CHANNEL_PRETRAINED = Path(
     os.environ.get("SM_CHANNEL_PRETRAINED", "/opt/ml/input/data/pretrained")
 )
+# `/opt/ml/checkpoints/` — anything written here is CONTINUOUSLY mirrored
+# to `checkpoint_s3_uri` by SageMaker (background rsync throughout the
+# job). SM_MODEL_DIR only uploads once at job end; SM_OUTPUT_DATA_DIR is
+# ephemeral and never leaves the container. So per-epoch checkpoints
+# MUST be written under SM_CHECKPOINT_DIR to survive to S3.
+# Requires the estimator to be built with:
+#   checkpoint_s3_uri="s3://<bucket>/<prefix>/checkpoints",
+#   checkpoint_local_path="/opt/ml/checkpoints",
+# (see launch_training.ipynb cell 062be268).
+SM_CHECKPOINT_DIR = Path(os.environ.get("SM_CHECKPOINT_DIR", "/opt/ml/checkpoints"))
 
 
 def ensure_shm_capacity() -> None:
@@ -126,10 +136,15 @@ def write_runtime_config(args: argparse.Namespace) -> Path:
     text = src.read_text()
 
     # Replace the ${oc.env:PWD}-relative paths with SageMaker channel paths.
+    # experiment_log_dir points at SM_CHECKPOINT_DIR (=/opt/ml/checkpoints/)
+    # so per-epoch checkpoints AND tensorboard logs stream continuously to
+    # `checkpoint_s3_uri`. WITHOUT this remap the trainer writes to
+    # /opt/ml/output/data/... which is ephemeral (survives only until job
+    # end) and NOT synced to S3, so per-epoch checkpoints appear to vanish.
     replacements = {
         "${oc.env:PWD}/data/AWS_SAM": str(SM_CHANNEL_TRAIN / "AWS_SAM"),
         "${oc.env:PWD}/data/AWS_SAM_split": str(SM_CHANNEL_TRAIN / "AWS_SAM_split"),
-        "${oc.env:PWD}/runs/aws_sam_finetune": str(SM_OUTPUT_DIR / "aws_sam_finetune"),
+        "${oc.env:PWD}/runs/aws_sam_finetune": str(SM_CHECKPOINT_DIR / "aws_sam_finetune"),
         "${oc.env:PWD}/sam3/assets/bpe_simple_vocab_16e6.txt.gz":
             "sam3/assets/bpe_simple_vocab_16e6.txt.gz",
         "/home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt":
@@ -343,8 +358,16 @@ def _find_bundled_cudnn_dir() -> str | None:
 
 def merge_and_export(args: argparse.Namespace) -> None:
     """After training, merge the trainer's checkpoint with the pretrained
-    weights and stage the result for SageMaker to upload."""
-    ckpt_dir = SM_OUTPUT_DIR / "aws_sam_finetune" / "checkpoints"
+    weights and stage the result for SageMaker to upload.
+
+    Reads from SM_CHECKPOINT_DIR (=/opt/ml/checkpoints/), matching where
+    write_runtime_config remaps experiment_log_dir. That's also the tree
+    SageMaker's checkpoint sync watches, so the raw per-epoch files are
+    already in S3 by the time this runs — the merge step just produces
+    the self-contained artifact for model.tar.gz.
+    """
+    del args  # currently unused; kept for symmetry with the other hooks
+    ckpt_dir = SM_CHECKPOINT_DIR / "aws_sam_finetune" / "checkpoints"
     raw_ckpt = ckpt_dir / "checkpoint.pt"
     if not raw_ckpt.exists():
         print(f"[train_entry] WARNING: no checkpoint at {raw_ckpt} — skipping merge")
@@ -398,6 +421,7 @@ def main() -> None:
 
     print("[train_entry] SageMaker training job started")
     print(f"[train_entry] SM_MODEL_DIR={SM_MODEL_DIR}")
+    print(f"[train_entry] SM_CHECKPOINT_DIR={SM_CHECKPOINT_DIR}")
     print(f"[train_entry] SM_CHANNEL_TRAIN={SM_CHANNEL_TRAIN}")
     print(f"[train_entry] SM_CHANNEL_PRETRAINED={SM_CHANNEL_PRETRAINED}")
 
@@ -410,7 +434,7 @@ def main() -> None:
 
     if args.skip_merge:
         # Just copy the raw checkpoint to the model dir.
-        raw = SM_OUTPUT_DIR / "aws_sam_finetune" / "checkpoints" / "checkpoint.pt"
+        raw = SM_CHECKPOINT_DIR / "aws_sam_finetune" / "checkpoints" / "checkpoint.pt"
         if raw.exists():
             SM_MODEL_DIR.mkdir(parents=True, exist_ok=True)
             shutil.copy(raw, SM_MODEL_DIR / raw.name)

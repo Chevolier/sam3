@@ -28,7 +28,7 @@ paths:
   sam3_pretrained_ckpt: /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt
 
 aws_sam_train:
-  num_images: null  # null = use all available images
+  num_images: 1000  # null = use all available images
   train_transforms:
     - _target_: sam3.train.transforms.basic_for_api.ComposeAPI
       transforms:
@@ -197,9 +197,9 @@ scratch:
   scheduler_warmup: 20
   scheduler_cooldown: 20
 
-  val_batch_size: 16
-  train_batch_size: 16
-  gradient_accumulation_steps: 1
+  val_batch_size: 8
+  train_batch_size: 8
+  gradient_accumulation_steps: 2
 
   collate_fn:
     _target_: sam3.train.data.collator.collate_fn_api
@@ -223,7 +223,7 @@ trainer:
   skip_saving_ckpts: false   # save checkpoints
   empty_gpu_mem_cache_after_eval: True
   skip_first_val: True
-  max_epochs: 20
+  max_epochs: 10
   accelerator: cuda
   seed_value: 123
   val_epoch_freq: 5
