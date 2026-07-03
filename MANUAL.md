@@ -107,9 +107,9 @@ to ~0.02. Merge fixes this by copying missing keys from the pretrained file:
 
 ```bash
 python scripts/finetune/merge_checkpoint.py \
-    --finetuned  runs/aws_sam_finetune/checkpoints/checkpoint.pt \
+    --finetuned  runs/aws_sam_finetune_click/checkpoints/checkpoint_8.pt \
     --pretrained /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
-    --output     runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt
+    --output     runs/aws_sam_finetune_click/checkpoints/checkpoint_8_merged.pt
 ```
 
 `checkpoint_merged.pt` is the **canonical artifact** for eval / compare /
@@ -131,23 +131,12 @@ through 3 settings and reports:
 
 ```bash
 # Pretrained baseline
-python scripts/finetune/eval/evaluate_interactive.py \
-    --coco data/AWS_SAM_split/test.json --image-root data/AWS_SAM \
-    --checkpoint /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
-    --output runs/eval/pretrained.json
-
-# Fine-tuned (merged)
-python scripts/finetune/eval/evaluate_interactive.py \
-    --coco data/AWS_SAM_split/test.json --image-root data/AWS_SAM \
-    --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt \
-    --output runs/eval/finetuned.json
-
-# Or from an unmerged checkpoint (fill missing keys at load time):
-python scripts/finetune/eval/evaluate_interactive.py \
-    --checkpoint runs/aws_sam_finetune_click/checkpoints/checkpoint_9.pt \
-    --pretrained-fallback /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
-    --coco data/AWS_SAM_split/test.json --image-root data/AWS_SAM \
-    --output runs/eval/finetuned_click_ckpt9.json
+nohup python -u scripts/finetune/eval/evaluate_interactive.py \
+      --checkpoint runs/aws_sam_finetune_sm/checkpoint_7.pt \
+      --pretrained-fallback /home/ec2-user/SageMaker/efs/Models/sam3/sam3.pt \
+      --coco data/AWS_SAM_split/test.json --image-root data/AWS_SAM \
+      --dump-predictions \
+      --output runs/eval/finetuned_sm_ckpt7.json > logs/finetuned_sm_ckpt7.out 2>&1 &
 
 # Markdown comparison table
 python scripts/finetune/eval/compare_results.py \
@@ -173,6 +162,7 @@ python scripts/finetune/compare_app/server.py \
     --finetuned-ckpt  runs/aws_sam_finetune/checkpoints/checkpoint_merged.pt \
     --port 8080
 ```
+runs/aws_sam_finetune_click/checkpoints/checkpoint_8_merged.pt
 
 SSH tunnel: `ssh -L 8080:localhost:8080 <ec2-host>` → open `http://localhost:8080`.
 Both models stay warm; image embedding cached per upload.

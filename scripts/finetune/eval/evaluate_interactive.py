@@ -35,6 +35,11 @@ Usage:
       --image-root data/AWS_SAM \
       --checkpoint runs/aws_sam_finetune/checkpoints/checkpoint.pt \
       --output runs/eval/finetuned.json
+
+  # Also dump per-instance predicted masks + GT alongside the metrics
+  #   (COCO-RLE encoded, decode with pycocotools.mask.decode)
+  python scripts/finetune/eval/evaluate_interactive.py \
+      ... --dump-predictions --output runs/eval/finetuned_full.json
 """
 
 from __future__ import annotations
@@ -64,6 +69,33 @@ def polygons_to_mask(polys: list[list[float]], h: int, w: int) -> np.ndarray:
     rles = mask_utils.frPyObjects(polys, h, w)
     rle = mask_utils.merge(rles)
     return mask_utils.decode(rle).astype(np.uint8)
+
+
+def mask_to_rle(mask: np.ndarray) -> dict:
+    """Encode a binary HxW mask as a COCO-RLE dict.
+
+    Same format the trainer uses (`ann_to_rle`), and the same format the
+    SageMaker inference handler emits — so the predictions dumped here
+    can be decoded by anyone downstream with a single
+    `pycocotools.mask.decode(rle)` call.
+    """
+    m = np.asarray(mask).astype(np.uint8)
+    if m.ndim != 2:
+        raise ValueError(f"expected 2D mask, got shape {m.shape}")
+    rle = mask_utils.encode(np.asfortranarray(m))
+    # `counts` comes back as bytes; JSON can't serialize that.
+    rle["counts"] = rle["counts"].decode("ascii")
+    return rle
+
+
+def mask_bbox_xywh(mask: np.ndarray) -> list[int]:
+    """Return the [x, y, w, h] bbox of the mask (empty mask → [0, 0, 0, 0])."""
+    ys, xs = np.where(mask.astype(bool))
+    if len(xs) == 0:
+        return [0, 0, 0, 0]
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    return [x0, y0, x1 - x0 + 1, y1 - y0 + 1]
 
 
 def iou(pred: np.ndarray, gt: np.ndarray) -> float:
@@ -223,17 +255,40 @@ def evaluate_one_instance(
     max_clicks: int,
     iou_target: float,
     skip_zero_click: bool,
+    dump_predictions: bool = False,
 ) -> dict:
-    """Returns {'iou_at_clicks': {0,1,3,...}, 'biou_at_clicks': {...},
-    'noc_to_target': int}."""
+    """Returns per-instance metrics at 0/1/3 clicks + NoC.
+
+    When `dump_predictions=True`, also returns `predictions` — a dict keyed
+    by click-count that includes the RLE-encoded predicted mask, the click
+    coordinates + labels used to produce it, and its bbox. Predictions are
+    reported at the same click levels that the metrics are reported at
+    (0, 1, 3), plus the final step reached during correction.
+    """
     iou_at = {}
     biou_at = {}
+    preds: dict[str, dict] = {}  # click-count key → prediction record
+
+    def record_pred(key: int, mask: np.ndarray, pts: np.ndarray | None,
+                    lbls: np.ndarray | None):
+        if not dump_predictions:
+            return
+        rec = {"mask_rle": mask_to_rle(mask), "bbox_xywh": mask_bbox_xywh(mask)}
+        if pts is not None and lbls is not None:
+            rec["clicks"] = [
+                {"x": int(x), "y": int(y), "label": int(l)}
+                for (x, y), l in zip(pts.tolist(), lbls.tolist())
+            ]
+        else:
+            rec["clicks"] = []
+        preds[str(key)] = rec
 
     # 0-click (text-only) — optional, expensive on big category sets.
     if not skip_zero_click:
         zc_mask = text_prompt_zero_click(processor, image, category_name, gt_mask)
         iou_at[0] = iou(zc_mask, gt_mask)
         biou_at[0] = boundary_iou(zc_mask, gt_mask)
+        record_pred(0, zc_mask, None, None)
 
     # Click-based prediction needs the interactive predictor's image embedding.
     inference_state = processor.set_image(image)
@@ -245,11 +300,14 @@ def evaluate_one_instance(
         for k in (1, 3):
             iou_at[k] = 0.0
             biou_at[k] = 0.0
-        return {
+        out = {
             "iou_at_clicks": iou_at,
             "biou_at_clicks": biou_at,
             "noc_to_target": max_clicks,
         }
+        if dump_predictions:
+            out["predictions"] = preds
+        return out
     points = np.array([[seed[0], seed[1]]], dtype=np.float32)
     labels = np.array([1], dtype=np.int64)
 
@@ -259,6 +317,7 @@ def evaluate_one_instance(
     cur_iou = iou(pred, gt_mask)
     iou_at[1] = cur_iou
     biou_at[1] = boundary_iou(pred, gt_mask)
+    record_pred(1, pred, points, labels)
     noc_to_target = max_clicks
     if cur_iou >= iou_target:
         noc_to_target = 1
@@ -272,6 +331,7 @@ def evaluate_one_instance(
                 if k not in iou_at:
                     iou_at[k] = cur_iou
                     biou_at[k] = boundary_iou(pred, gt_mask)
+                    record_pred(3, pred, points, labels)
             if noc_to_target == max_clicks and cur_iou >= iou_target:
                 noc_to_target = n_clicks - 1
             break
@@ -290,6 +350,7 @@ def evaluate_one_instance(
         if n_clicks == 3:
             iou_at[3] = cur_iou
             biou_at[3] = boundary_iou(pred, gt_mask)
+            record_pred(3, pred, points, labels)
         if cur_iou >= iou_target and noc_to_target == max_clicks:
             noc_to_target = n_clicks
             # Continue ONLY if we still need to record IoU @ 3 clicks.
@@ -300,12 +361,16 @@ def evaluate_one_instance(
     if 3 not in iou_at:
         iou_at[3] = cur_iou
         biou_at[3] = boundary_iou(pred, gt_mask)
+        record_pred(3, pred, points, labels)
 
-    return {
+    out = {
         "iou_at_clicks": iou_at,
         "biou_at_clicks": biou_at,
         "noc_to_target": noc_to_target,
     }
+    if dump_predictions:
+        out["predictions"] = preds
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +383,8 @@ def iter_instances(
     image_root: Path,
     min_area_px: int,
     max_per_image: int | None,
-) -> Iterable[tuple[int, dict, np.ndarray, str, Image.Image]]:
+) -> Iterable[tuple[int, dict, np.ndarray, str, Image.Image, str]]:
+    """Yields (image_id, annotation, gt_mask, category_name, pil_image, file_name)."""
     cat_id_to_name = {c["id"]: c["name"] for c in coco["categories"]}
     images_by_id = {im["id"]: im for im in coco["images"]}
     anns_by_image: dict[int, list[dict]] = {}
@@ -355,6 +421,7 @@ def iter_instances(
                 gt,
                 cat_id_to_name[ann["category_id"]],
                 pil,
+                im_info["file_name"],
             )
             kept += 1
             if max_per_image is not None and kept >= max_per_image:
@@ -434,6 +501,14 @@ def main() -> None:
         help="Skip the text-prompt 0-click path (useful when category names "
         "don't disambiguate well or you only care about click metrics).",
     )
+    parser.add_argument(
+        "--dump-predictions",
+        action="store_true",
+        help="For every instance, also emit the model's predicted masks "
+        "(COCO-RLE encoded, same layout as GT) at 0 / 1 / 3 clicks, along "
+        "with the click coords + labels used. Roughly doubles output file "
+        "size on dense masks — skip for large sweeps.",
+    )
     args = parser.parse_args()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -501,7 +576,7 @@ def main() -> None:
     rows: list[dict] = []
     t0 = time.time()
     n_seen = 0
-    for image_id, ann, gt, cat_name, pil in iter_instances(
+    for image_id, ann, gt, cat_name, pil, file_name in iter_instances(
         coco,
         args.image_root,
         args.min_area,
@@ -521,10 +596,21 @@ def main() -> None:
                     max_clicks=args.max_clicks,
                     iou_target=args.iou_target,
                     skip_zero_click=args.skip_zero_click,
+                    dump_predictions=args.dump_predictions,
                 )
             row["image_id"] = image_id
             row["ann_id"] = ann["id"]
             row["category"] = cat_name
+            if args.dump_predictions:
+                # Include GT alongside predictions so a client can diff without
+                # re-loading the COCO file. Same COCO-RLE format as the
+                # prediction masks, so decoding is uniform.
+                row["ground_truth"] = {
+                    "mask_rle": mask_to_rle(gt),
+                    "bbox_xywh": mask_bbox_xywh(gt),
+                    "image_size_hw": list(gt.shape),
+                    "file_name": file_name,
+                }
             rows.append(row)
         except Exception as e:
             print(f"[eval] instance {ann['id']} failed: {e}")
